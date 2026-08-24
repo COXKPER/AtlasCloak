@@ -33,11 +33,14 @@ if request.method == "GET" and _opt ~= "" then
     local ud = load_user(db)
     local existing = {}
     for _, pk in ipairs(ud.passkeys or {}) do table.insert(existing, pk.cred_id) end
-    local host = (utils.get_base_url():match("^https?://([^/]+)")) or (request.host or "localhost")
-    local rp_id = host:match("^[^:]+") or host   -- WebAuthn rpId excludes the port
+    local rp_host = (utils.get_base_url():match("^https?://([^/]+)")) or (request.host or "localhost")
+    local rp_id = rp_host:match("^[^:]+") or rp_host   -- WebAuthn rpId excludes the port
     utils.wa_store_challenge(db, challenge, username)
     db:close()
-    response:json({
+
+    -- NOTE: an empty Lua table encodes as a JSON object, not an array, so
+    -- excludeCredentials is omitted entirely when there are no credentials.
+    local payload = {
         challenge = challenge,
         rp = { name = "AtlasCloak (" .. utils.get_realm_display_name(db) .. ")", id = rp_id },
         user = {
@@ -48,9 +51,10 @@ if request.method == "GET" and _opt ~= "" then
         pubKeyCredParams = { { type = "public-key", alg = -7 } },
         timeout = 120000,
         authenticatorSelection = { residentKey = "preferred", userVerification = "preferred" },
-        attestation = "none",
-        excludeCredentials = existing
-    })
+        attestation = "none"
+    }
+    if #existing > 0 then payload.excludeCredentials = existing end
+    response:json(payload)
     return
 end
 
@@ -122,7 +126,10 @@ local content = msg_html .. [[
         const opts=await fetch(location.pathname+'?options=1').then(r=>r.json());
         opts.challenge=b64uToBuf(opts.challenge);
         opts.user.id=b64uToBuf(opts.user.id);
-        opts.excludeCredentials=(opts.excludeCredentials||[]).map(c=>({type:'public-key',id:b64uToBuf(c)}));
+        // defensive: some encoders emit {} instead of [] for empty lists
+        let exc = opts.excludeCredentials;
+        if (!Array.isArray(exc)) exc = [];
+        exc = exc.map(c=>({type:'public-key',id:b64uToBuf(c)}));
         const cred=await navigator.credentials.create({publicKey:opts});
         const res=await fetch('/account/passkeys/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
           id:cred.id,rawId:bufToB64u(cred.rawId),type:cred.type,

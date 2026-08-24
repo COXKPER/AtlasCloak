@@ -1,7 +1,7 @@
 local M = {}
 
 M.db_path = "./atlascloak.db"
-M.version = "2.0.0"
+M.version = "2.0.1"
 
 local sha256_mod = dofile("public/lib/sha256.lua")
 

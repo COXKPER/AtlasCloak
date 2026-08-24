@@ -135,10 +135,10 @@ end
 local _opt = request:getParam("options") or ""
 if request.method == "GET" and _opt ~= "" then
     local host = (utils.get_base_url():match("^https?://([^/]+)")) or (request.host or "localhost")
+    -- allowCredentials omitted: any registered discoverable credential may respond
     response:json({
         challenge = _opt,
         rpId = (host:match("^[^:]+")) or host,
-        allowCredentials = {},
         timeout = 120000,
         userVerification = "preferred"
     })
@@ -190,7 +190,8 @@ async function startLogin(){
     const opts = await fetch(location.pathname+'?options='+encodeURIComponent(CHALLENGE)).then(r=>r.json());
     const cred = await navigator.credentials.get({
       publicKey:{challenge:b64uToBuf(opts.challenge),timeout:120000,userVerification:'preferred',rpId:opts.rpId,
-        allowCredentials:(opts.allowCredentials||[]).map(c=>({type:'public-key',id:b64uToBuf(c)}))}
+        allowCredentials:(Array.isArray(opts.allowCredentials)?opts.allowCredentials:[])
+          .map(c=>({type:'public-key',id:b64uToBuf(c)}))}
     });
     const res = await fetch(location.pathname,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
       id:cred.id,rawId:bufToB64u(cred.rawId),type:cred.type,
