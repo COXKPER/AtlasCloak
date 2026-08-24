@@ -51,8 +51,18 @@ POST /auth/realms/master/protocol/openid-connect/token    →  token endpoint
 - Review and revoke own sessions
 - Logout everywhere
 
+### Authentication (New in v2.0)
+
+- **TOTP two-factor authentication** — enroll Google Authenticator/Aegis/FreeOTP from the account console; mandatory challenge at login; policy-forced enrollment available
+- **Passkeys / WebAuthn (FIDO2)** — register passkeys and sign in passwordless; ES256 assertions verified server-side via the Telamon `crypto.p256_verify` bridge
+- **Device Authorization Grant** (RFC 8628) — sign in TVs, CLIs, and IoT devices using short codes at `/device`
+
 ### Core
 
+- **Realm Policies** — per-realm toggles: require PKCE on all code flows, require MFA for all users/admins, enable/disable passkeys & device flow, default consent, session idle timeout
+- **Multi-realm** — create/delete realms in the admin console; fully isolated users/clients/roles/settings served instantly under `/auth/realms/<name>/…` (`master` keeps legacy unprefixed data — zero migration)
+- **Security headers** — CSP, X-Frame-Options DENY, nosniff, Referrer-Policy, COOP on every response including redirects
+- **Scope-aware consent** — per-scope descriptions of what each application can access, remembered per granted scope set
 - **Zero-dependency storage** — embedded LevelDB key-value store through Telamon's `ldb` bridge; no external database required
 - **Lazy initialization** — bootstrap admin and default realm data are created on first request
 - **Forced password rotation** — the bootstrap admin must change its password at first login
