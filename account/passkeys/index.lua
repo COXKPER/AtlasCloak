@@ -129,7 +129,7 @@ local content = msg_html .. [[
         // defensive: some encoders emit {} instead of [] for empty lists
         let exc = opts.excludeCredentials;
         if (!Array.isArray(exc)) exc = [];
-        exc = exc.map(c=>({type:'public-key',id:b64uToBuf(c)}));
+        opts.excludeCredentials = exc.map(c=>({type:'public-key',id:b64uToBuf(c)}));
         const cred=await navigator.credentials.create({publicKey:opts});
         const res=await fetch('/account/passkeys/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
           id:cred.id,rawId:bufToB64u(cred.rawId),type:cred.type,
