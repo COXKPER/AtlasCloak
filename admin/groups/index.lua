@@ -23,10 +23,10 @@ if delete_group and delete_group ~= "" then
         time = os.time(),
         detail = "Deleted group: " .. delete_group
     }
-    local events_str = db:get("meta:events")
+    local events_str = db:get(utils.rk("meta:events"))
     local events = events_str and json.decode(events_str) or {}
     table.insert(events, event)
-    db:put("meta:events", json.encode(events))
+    db:put(utils.rk("meta:events"), json.encode(events))
     
     db:close()
     response:redirect("/admin/groups", 302)
@@ -60,17 +60,17 @@ if request.method == "POST" then
             time = os.time(),
             detail = "Created group: " .. group_name .. " with roles: " .. table.concat(assigned_roles, ", ")
         }
-        local events_str = db:get("meta:events")
+        local events_str = db:get(utils.rk("meta:events"))
         local events = events_str and json.decode(events_str) or {}
         table.insert(events, event)
-        db:put("meta:events", json.encode(events))
+        db:put(utils.rk("meta:events"), json.encode(events))
         
         msg_html = '<div class="alert alert-success"><span class="alert-icon"><i class="fa-solid fa-check"></i></span> Group <strong>' .. utils.html_escape(group_name) .. '</strong> created!</div>'
     end
 end
 
 local groups = utils.get_groups(db)
-local users_str = db:get("meta:user_list")
+local users_str = db:get(utils.rk("meta:user_list"))
 local user_list = users_str and json.decode(users_str) or {}
 
 -- Count members per group

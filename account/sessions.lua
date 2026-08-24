@@ -10,7 +10,7 @@ if not username then
     return
 end
 
-local user_data_str = db:get("user:" .. username)
+local user_data_str = db:get(utils.rk("user:") .. username)
 local user_data = user_data_str and json.decode(user_data_str) or { username = username }
 
 -- Action: Revoke single session

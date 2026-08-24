@@ -23,7 +23,7 @@ if request.method == "POST" then
         
         local realm_display_name = form.realm_display_name or "Atlas"
         if realm_display_name == "" then realm_display_name = "Atlas" end
-        db:put("setting:realm_display_name", realm_display_name)
+        db:put(utils.rk("setting:realm_display_name"), realm_display_name)
         
         msg_html = '<div class="alert alert-success"><span class="alert-icon">✓</span> General settings saved!</div>'
         current_tab = "general"
@@ -33,10 +33,10 @@ if request.method == "POST" then
         local token_format = form.token_format or "jwt"
         local jwt_secret = form.jwt_secret or ""
         
-        db:put("setting:token_lifespan", token_lifespan)
-        db:put("setting:token_format", token_format)
+        db:put(utils.rk("setting:token_lifespan"), token_lifespan)
+        db:put(utils.rk("setting:token_format"), token_format)
         if jwt_secret ~= "" then
-            db:put("setting:jwt_secret", jwt_secret)
+            db:put(utils.rk("setting:jwt_secret"), jwt_secret)
         end
         
         msg_html = '<div class="alert alert-success"><span class="alert-icon">✓</span> Token & JWT configuration saved!</div>'
@@ -47,9 +47,9 @@ if request.method == "POST" then
         local max_failures = form.max_login_failures or "5"
         local lockout_duration = form.lockout_duration or "900"
         
-        db:put("setting:brute_force_enabled", brute_force_enabled and "true" or "false")
-        db:put("setting:max_login_failures", max_failures)
-        db:put("setting:lockout_duration", lockout_duration)
+        db:put(utils.rk("setting:brute_force_enabled"), brute_force_enabled and "true" or "false")
+        db:put(utils.rk("setting:max_login_failures"), max_failures)
+        db:put(utils.rk("setting:lockout_duration"), lockout_duration)
         
         msg_html = '<div class="alert alert-success"><span class="alert-icon">✓</span> Security & Brute Force protection saved!</div>'
         current_tab = "security"
@@ -61,11 +61,11 @@ if request.method == "POST" then
         local pwd_req_number = (form.pwd_req_number == "on" or form.pwd_req_number == "true")
         local pwd_req_symbol = (form.pwd_req_symbol == "on" or form.pwd_req_symbol == "true")
         
-        db:put("setting:pwd_min_length", pwd_min_length)
-        db:put("setting:pwd_req_upper", pwd_req_upper and "true" or "false")
-        db:put("setting:pwd_req_lower", pwd_req_lower and "true" or "false")
-        db:put("setting:pwd_req_number", pwd_req_number and "true" or "false")
-        db:put("setting:pwd_req_symbol", pwd_req_symbol and "true" or "false")
+        db:put(utils.rk("setting:pwd_min_length"), pwd_min_length)
+        db:put(utils.rk("setting:pwd_req_upper"), pwd_req_upper and "true" or "false")
+        db:put(utils.rk("setting:pwd_req_lower"), pwd_req_lower and "true" or "false")
+        db:put(utils.rk("setting:pwd_req_number"), pwd_req_number and "true" or "false")
+        db:put(utils.rk("setting:pwd_req_symbol"), pwd_req_symbol and "true" or "false")
         
         msg_html = '<div class="alert alert-success"><span class="alert-icon">✓</span> Password policy updated!</div>'
         current_tab = "password_policy"
@@ -85,9 +85,9 @@ if request.method == "POST" then
                 bg_value = "linear-gradient(135deg, #090d16 0%, #0f172a 45%, #1e1b4b 100%)"
             end
             
-            db:put("setting:custom_logo", logo)
-            db:put("setting:bg_type", bg_type)
-            db:put("setting:bg_value", bg_value)
+            db:put(utils.rk("setting:custom_logo"), logo)
+            db:put(utils.rk("setting:bg_type"), bg_type)
+            db:put(utils.rk("setting:bg_value"), bg_value)
             
             msg_html = '<div class="alert alert-success"><span class="alert-icon">✓</span> Branding and theme settings saved successfully!</div>'
         end
@@ -172,7 +172,7 @@ if request.method == "POST" then
                 time = os.time(),
                 detail = upgrade_failed and "Self-update from GitHub failed" or "Self-update from GitHub applied"
             }
-            local events_str = db:get("meta:events")
+            local events_str = db:get(utils.rk("meta:events"))
             local events = events_str and json.decode(events_str) or {}
             table.insert(events, event)
             if #events > 100 then
@@ -180,13 +180,56 @@ if request.method == "POST" then
                 for i = #events - 99, #events do table.insert(new_events, events[i]) end
                 events = new_events
             end
-            db:put("meta:events", json.encode(events))
+            db:put(utils.rk("meta:events"), json.encode(events))
             
             local alert_cls = upgrade_failed and "alert-error" or "alert-success"
             local icon = upgrade_failed and "✕" or "✓"
             msg_html = '<div class="alert ' .. alert_cls .. '"><span class="alert-icon">' .. icon .. '</span> Self-update finished with result:<br><pre style="margin-top:6px;font-size:11px;color:#cbd5e1;background:#0f172a;padding:8px;border-radius:6px;overflow-x:auto;">' .. utils.html_escape(table.concat(lines, "\n")) .. '</pre></div>'
             current_tab = "updates"
         end
+
+    elseif action == "save_policies" then
+        local function t(v) return (v == "on" or v == "true") and "true" or "false" end
+        db:put(utils.rk("policy:pkce_required"), t(form.pol_pkce_required))
+        db:put(utils.rk("policy:mfa_required_all"), t(form.pol_mfa_required_all))
+        db:put(utils.rk("policy:mfa_required_admins"), t(form.pol_mfa_required_admins))
+        db:put(utils.rk("policy:passkeys_enabled"), t(form.pol_passkeys_enabled))
+        db:put(utils.rk("policy:device_flow_enabled"), t(form.pol_device_flow_enabled))
+        db:put(utils.rk("policy:consent_default"), t(form.pol_consent_default))
+        local idle = tonumber(form.session_idle_timeout) or 0
+        if idle < 0 then idle = 0 end
+        db:put(utils.rk("setting:session_idle_timeout"), tostring(idle))
+
+        msg_html = '<div class="alert alert-success"><span class="alert-icon">✓</span> Realm policies saved.</div>'
+        current_tab = "policies"
+
+    elseif action == "create_realm" then
+        local ok_token, token_err = utils.validate_security_token(db, form, "realm_admin")
+        if not ok_token then
+            msg_html = '<div class="alert alert-error"><span class="alert-icon">✕</span> ' .. utils.html_escape(token_err) .. '</div>'
+        else
+            local ok_create, err_create = utils.create_realm(db, form.realm_name or "")
+            if ok_create then
+                msg_html = '<div class="alert alert-success"><span class="alert-icon">✓</span> Realm <strong>' .. utils.html_escape(form.realm_name) .. '</strong> created. Its endpoints are live at <code>/auth/realms/' .. utils.html_escape(form.realm_name) .. '/…</code> immediately.</div>'
+            else
+                msg_html = '<div class="alert alert-error"><span class="alert-icon">✕</span> ' .. utils.html_escape(err_create or "Could not create realm") .. '</div>'
+            end
+        end
+        current_tab = "realms"
+
+    elseif action == "delete_realm" then
+        local ok_token, token_err = utils.validate_security_token(db, form, "realm_admin")
+        if not ok_token then
+            msg_html = '<div class="alert alert-error"><span class="alert-icon">✕</span> ' .. utils.html_escape(token_err) .. '</div>'
+        else
+            local ok_del, err_del = utils.delete_realm(db, form.realm_name or "")
+            if ok_del then
+                msg_html = '<div class="alert alert-success"><span class="alert-icon">✓</span> Realm <strong>' .. utils.html_escape(form.realm_name) .. '</strong> deleted together with its data.</div>'
+            else
+                msg_html = '<div class="alert alert-error"><span class="alert-icon">✕</span> ' .. utils.html_escape(err_del or "Could not delete realm") .. '</div>'
+            end
+        end
+        current_tab = "realms"
 
     elseif action == "import_realm" then
         local json_payload = form.json_payload or ""
@@ -211,25 +254,30 @@ if request.method == "POST" then
         time = os.time(),
         detail = "Updated realm settings tab: " .. current_tab
     }
-    local events_str = db:get("meta:events")
+    local events_str = db:get(utils.rk("meta:events"))
     local events = events_str and json.decode(events_str) or {}
     table.insert(events, event)
-    db:put("meta:events", json.encode(events))
+    db:put(utils.rk("meta:events"), json.encode(events))
 end
 
 -- Fetch current settings
 local reg_enabled = utils.is_registration_enabled(db)
 local realm_display_name = utils.get_realm_display_name(db)
-local token_lifespan = db:get("setting:token_lifespan") or "3600"
-local token_format = db:get("setting:token_format") or "jwt"
+local token_lifespan = db:get(utils.rk("setting:token_lifespan")) or "3600"
+local token_format = db:get(utils.rk("setting:token_format")) or "jwt"
 -- Note: never fetch/render the actual JWT secret here (T2) — get_jwt_secret()
 -- would generate + persist a secret as a side effect of merely viewing the page.
 
 local bf_cfg = utils.get_brute_force_config(db)
 local policy = utils.get_password_policy(db)
 
--- One-time CSRF token for the self-update actions (bound to action
--- "system_update", expires in 10 minutes, consumed on use).
+-- Realm policies + realm registry
+local pol = utils.get_policies(db)
+local realms = utils.get_realms(db)
+local realm_admin_sec_token = utils.generate_security_token(db, "realm_admin")
+local idle_timeout = utils.get_session_idle_timeout(db)
+
+-- One-time CSRF tokens for privileged actions (10-minute expiry, single use)
 local update_sec_token = utils.generate_security_token(db, "system_update")
 
 db:close()
@@ -693,6 +741,109 @@ cp -a /tmp/atlascloak-update/AtlasCloak-main/. public/
     </div>
 ]]
 
+-- Realm Policies Tab Content
+local function pol_toggle(name, label, desc, checked)
+    return [[
+        <div class="toggle-row">
+            <div>
+                <div class="toggle-label">]] .. label .. [[</div>
+                <div class="toggle-desc">]] .. desc .. [[</div>
+            </div>
+            <label class="toggle">
+                <input type="checkbox" name="]] .. name .. [[" ]] .. (checked and "checked" or "") .. [[>
+                <span class="toggle-slider"></span>
+            </label>
+        </div>
+    ]]
+end
+
+local policies_tab_html = [[
+    <form method="POST" action="/admin/realm-settings?tab=policies">
+        <input type="hidden" name="action" value="save_policies">
+        <div style="font-size:12px;color:var(--text-muted);margin-bottom:14px;">
+            Policies apply to realm <code>master</code> and are stored per-realm.
+        </div>
+        <div class="card" style="background:rgba(0,0,0,0.2);margin-bottom:16px;">
+            <div class="card-header"><h3><i class="fa-solid fa-shield-halved" style="margin-right:6px;color:var(--success);"></i> Authentication Policies</h3></div>
+            ]] ..
+            pol_toggle("pol_mfa_required_all", "Require MFA for all users", "Every login must enroll and verify a TOTP authenticator", pol.mfa_required_all) ..
+            pol_toggle("pol_mfa_required_admins", "Require MFA for admin console", "Admins without 2FA cannot open the admin console", pol.mfa_required_admins) ..
+            pol_toggle("pol_passkeys_enabled", "Allow Passkeys / WebAuthn", "Users can register passkeys and sign in passwordless", pol.passkeys_enabled) ..
+            pol_toggle("pol_device_flow_enabled", "Allow Device Authorization Flow", "RFC 8628 sign-in for TVs, CLIs, and IoT devices", pol.device_flow_enabled) ..
+        [[
+        </div>
+        <div class="card" style="background:rgba(0,0,0,0.2);margin-bottom:16px;">
+            <div class="card-header"><h3><i class="fa-solid fa-key" style="margin-right:6px;color:var(--primary-hover);"></i> OAuth / OIDC Policies</h3></div>
+            ]] ..
+            pol_toggle("pol_pkce_required", "Require PKCE on all authorization-code flows", "Reject code flows without code_challenge (recommended for public clients)", pol.pkce_required) ..
+            pol_toggle("pol_consent_default", "Require consent by default", "Clients without an explicit consent setting show the consent screen", pol.consent_default) ..
+        [[
+        </div>
+        <div class="form-group">
+            <label>Session Idle Timeout (seconds, 0 = never expire)</label>
+            <input type="number" name="session_idle_timeout" value="]] .. tostring(idle_timeout) .. [[" min="0" max="2592000">
+            <small style="color:var(--text-muted);font-size:11px;">Sessions idle longer than this are invalidated automatically.</small>
+        </div>
+        <button type="submit" class="btn btn-primary" style="width:auto;"><i class="fa-solid fa-floppy-disk"></i> Save Realm Policies</button>
+    </form>
+]]
+
+-- Realms Tab Content
+local realm_rows = ""
+for _, r in ipairs(realms) do
+    local issuer = utils.get_base_url() .. "/auth/realms/" .. r
+    local del_btn = ""
+    if r ~= "master" then
+        del_btn = [[
+            <form method="POST" action="/admin/realm-settings?tab=realms" style="display:inline;" onsubmit="return confirm('Delete realm ' + ']] .. utils.html_escape(r) .. [[' and ALL its data? This cannot be undone.');">
+                <input type="hidden" name="action" value="delete_realm">
+                <input type="hidden" name="realm_name" value="]] .. utils.html_escape(r) .. [[">
+                ]] .. utils.render_security_fields(realm_admin_sec_token) .. [[
+                <button type="submit" class="btn btn-sm btn-danger"><i class="fa-solid fa-trash"></i> Delete</button>
+            </form>
+        ]]
+    else
+        del_btn = '<span class="badge badge-success">System Realm</span>'
+    end
+    realm_rows = realm_rows .. [[
+        <tr>
+            <td><strong>]] .. utils.html_escape(r) .. [[</strong></td>
+            <td><code style="font-size:11px;">]] .. utils.html_escape(issuer) .. [[</code></td>
+            <td style="text-align:right;">]] .. del_btn .. [[</td>
+        </tr>
+    ]]
+end
+
+local realms_tab_html = [[
+    <div class="card" style="background:rgba(0,0,0,0.2);margin-bottom:20px;">
+        <div class="card-header"><h3><i class="fa-solid fa-globe" style="margin-right:6px;color:var(--accent);"></i> Registered Realms</h3></div>
+        <div class="card-body">
+            <table>
+                <thead><tr><th>Realm</th><th>Issuer Base</th><th style="text-align:right;">Actions</th></tr></thead>
+                <tbody>]] .. realm_rows .. [[</tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="card" style="background:rgba(0,0,0,0.2);">
+        <div class="card-header"><h3><i class="fa-solid fa-plus" style="margin-right:6px;color:var(--primary-hover);"></i> Create New Realm</h3></div>
+        <div class="card-body">
+            <p style="font-size:13px;color:var(--text-muted);margin-bottom:14px;">
+                A new realm gets fully isolated users, clients, roles, groups, sessions-audit, keys, and policies — served instantly under its own URL path. The <code>master</code> realm keeps its existing data untouched.
+            </p>
+            <form method="POST" action="/admin/realm-settings?tab=realms">
+                <input type="hidden" name="action" value="create_realm">
+                ]] .. utils.render_security_fields(realm_admin_sec_token) .. [[
+                <div class="form-group">
+                    <label>Realm Name</label>
+                    <input type="text" name="realm_name" placeholder="e.g. partners, internal-b2b" required pattern="[A-Za-z0-9][A-Za-z0-9\-_.]*" maxlength="48">
+                </div>
+                <button type="submit" class="btn btn-primary" onclick="return confirm('Create this realm?');"><i class="fa-solid fa-plus"></i> Create Realm</button>
+            </form>
+        </div>
+    </div>
+]]
+
 local active_section_html = general_tab_html
 if current_tab == "theme" then active_section_html = theme_tab_html
 elseif current_tab == "updates" then active_section_html = updates_tab_html
@@ -700,6 +851,8 @@ elseif current_tab == "tokens" then active_section_html = tokens_tab_html
 elseif current_tab == "security" then active_section_html = security_tab_html
 elseif current_tab == "password_policy" then active_section_html = pwd_tab_html
 elseif current_tab == "export_import" then active_section_html = export_tab_html
+elseif current_tab == "policies" then active_section_html = policies_tab_html
+elseif current_tab == "realms" then active_section_html = realms_tab_html
 end
 
 local content = msg_html .. [[
@@ -710,6 +863,8 @@ local content = msg_html .. [[
         <a href="/admin/realm-settings?tab=security" class="]] .. tab_class("security") .. [["><i class="fa-solid fa-shield-halved"></i> Brute Force</a>
         <a href="/admin/realm-settings?tab=password_policy" class="]] .. tab_class("password_policy") .. [["><i class="fa-solid fa-scroll"></i> Password Policy</a>
         <a href="/admin/whitelist" class="tab-btn"><i class="fa-solid fa-list-check"></i> URI Whitelist</a>
+        <a href="/admin/realm-settings?tab=policies" class="]] .. tab_class("policies") .. [["><i class="fa-solid fa-scale-balanced"></i> Realm Policies</a>
+        <a href="/admin/realm-settings?tab=realms" class="]] .. tab_class("realms") .. [["><i class="fa-solid fa-globe"></i> Realms</a>
         <a href="/admin/realm-settings?tab=updates" class="]] .. tab_class("updates") .. [["><i class="fa-solid fa-cloud-arrow-up"></i> Updates & Legal</a>
         <a href="/admin/realm-settings?tab=export_import" class="]] .. tab_class("export_import") .. [["><i class="fa-solid fa-box-archive"></i> Export / Import</a>
     </div>

@@ -1,4 +1,5 @@
 local utils = dofile("public/lib/utils.lua")
+utils.apply_security_headers()
 
 local raw_redirect = request:getParam("post_logout_redirect_uri") or request:getParam("redirect_uri") or "/"
 local client_id = request:getParam("client_id")
@@ -39,7 +40,7 @@ if session_id then
             time = os.time(),
             detail = "User logged out"
         }
-        local events_str = db:get("meta:events")
+        local events_str = db:get(utils.rk("meta:events"))
         local events = events_str and json.decode(events_str) or {}
         table.insert(events, event)
         if #events > 100 then
@@ -47,7 +48,7 @@ if session_id then
             for i = #events - 99, #events do table.insert(new, events[i]) end
             events = new
         end
-        db:put("meta:events", json.encode(events))
+        db:put(utils.rk("meta:events"), json.encode(events))
     end
 end
 db:close()

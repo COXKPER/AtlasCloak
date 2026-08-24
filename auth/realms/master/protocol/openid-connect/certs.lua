@@ -1,3 +1,5 @@
+local utils = dofile("public/lib/utils.lua")
+utils.apply_security_headers()
 -- JWKS (JSON Web Key Set) endpoint for OpenID Connect
 response:json({
     keys = {

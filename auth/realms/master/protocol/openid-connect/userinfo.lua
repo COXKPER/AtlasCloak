@@ -1,4 +1,5 @@
 local utils = dofile("public/lib/utils.lua")
+utils.apply_security_headers()
 
 local auth_header = request.headers["authorization"]
 if not auth_header or not string.match(auth_header, "^[Bb]earer%s+(.+)$") then
@@ -22,7 +23,7 @@ if not ok then
 end
 
 local username = token_data.username or token_data.sub
-local user_data_str = db:get("user:" .. (username or ""))
+local user_data_str = db:get(utils.rk("user:") .. (username or ""))
 local roles = token_data.roles or utils.get_user_roles(db, username)
 db:close()
 

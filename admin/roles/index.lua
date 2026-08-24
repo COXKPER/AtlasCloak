@@ -26,10 +26,10 @@ if delete_role and delete_role ~= "" then
             time = os.time(),
             detail = "Deleted role: " .. delete_role
         }
-        local events_str = db:get("meta:events")
+        local events_str = db:get(utils.rk("meta:events"))
         local events = events_str and json.decode(events_str) or {}
         table.insert(events, event)
-        db:put("meta:events", json.encode(events))
+        db:put(utils.rk("meta:events"), json.encode(events))
         
         db:close()
         response:redirect("/admin/roles", 302)
@@ -54,17 +54,17 @@ if request.method == "POST" then
             time = os.time(),
             detail = "Created custom role: " .. role_name
         }
-        local events_str = db:get("meta:events")
+        local events_str = db:get(utils.rk("meta:events"))
         local events = events_str and json.decode(events_str) or {}
         table.insert(events, event)
-        db:put("meta:events", json.encode(events))
+        db:put(utils.rk("meta:events"), json.encode(events))
         
         msg_html = '<div class="alert alert-success"><span class="alert-icon"><i class="fa-solid fa-check"></i></span> Role <strong>' .. utils.html_escape(role_name) .. '</strong> created!</div>'
     end
 end
 
 local roles = utils.get_roles(db)
-local users_str = db:get("meta:user_list")
+local users_str = db:get(utils.rk("meta:user_list"))
 local user_list = users_str and json.decode(users_str) or {}
 
 -- Count users per role

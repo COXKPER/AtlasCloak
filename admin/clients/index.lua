@@ -15,15 +15,15 @@ local msg_html = ""
 -- Handle Delete Client
 local delete_client = request:getParam("delete")
 if delete_client and delete_client ~= "" and delete_client ~= "account" and delete_client ~= "admin-console" then
-    db:delete("client:" .. delete_client)
-    local clients_str = db:get("meta:client_list")
+    db:delete(utils.rk("client:") .. delete_client)
+    local clients_str = db:get(utils.rk("meta:client_list"))
     if clients_str then
         local clients = json.decode(clients_str)
         local new_clients = {}
         for _, c in ipairs(clients) do
             if c ~= delete_client then table.insert(new_clients, c) end
         end
-        db:put("meta:client_list", json.encode(new_clients))
+        db:put(utils.rk("meta:client_list"), json.encode(new_clients))
     end
     db:close()
     response:redirect("/admin/clients", 302)
@@ -42,7 +42,7 @@ if request.method == "POST" then
     
     if client_id == "" then
         msg_html = '<div class="alert alert-error"><span class="alert-icon">✕</span> Client ID is required.</div>'
-    elseif db:get("client:" .. client_id) then
+    elseif db:get(utils.rk("client:") .. client_id) then
         msg_html = '<div class="alert alert-error"><span class="alert-icon">✕</span> Client ID already exists.</div>'
     else
         local client_secret = utils.uuid()
@@ -56,12 +56,12 @@ if request.method == "POST" then
             enabled = true,
             createdAt = os.time()
         }
-        db:put("client:" .. client_id, json.encode(cdata))
+        db:put(utils.rk("client:") .. client_id, json.encode(cdata))
         
-        local clients_str = db:get("meta:client_list")
+        local clients_str = db:get(utils.rk("meta:client_list"))
         local clients = clients_str and json.decode(clients_str) or { "account", "admin-console" }
         table.insert(clients, client_id)
-        db:put("meta:client_list", json.encode(clients))
+        db:put(utils.rk("meta:client_list"), json.encode(clients))
         
         local event = {
             type = "CLIENT_CREATE",
@@ -70,22 +70,22 @@ if request.method == "POST" then
             time = os.time(),
             detail = "Created client: " .. client_id .. " (Type: " .. client_type .. ")"
         }
-        local events_str = db:get("meta:events")
+        local events_str = db:get(utils.rk("meta:events"))
         local events = events_str and json.decode(events_str) or {}
         table.insert(events, event)
-        db:put("meta:events", json.encode(events))
+        db:put(utils.rk("meta:events"), json.encode(events))
         
         msg_html = '<div class="alert alert-success"><span class="alert-icon">✓</span> Client <strong>' .. utils.html_escape(client_id) .. '</strong> created! Secret: <code>' .. client_secret .. '</code></div>'
     end
 end
 
 -- Ensure default clients exist in metadata
-local clients_str = db:get("meta:client_list")
+local clients_str = db:get(utils.rk("meta:client_list"))
 local client_list = clients_str and json.decode(clients_str) or { "account", "admin-console" }
 
 local rows = ""
 for _, cid in ipairs(client_list) do
-    local cdata_str = db:get("client:" .. cid)
+    local cdata_str = db:get(utils.rk("client:") .. cid)
     local cdata = cdata_str and json.decode(cdata_str) or {
         client_id = cid,
         name = (cid == "account" and "Account Management" or "Admin Console"),

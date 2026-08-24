@@ -1,4 +1,6 @@
 local utils = dofile("public/lib/utils.lua")
+utils.apply_security_headers()
+local RB = "/auth/realms/" .. utils.get_realm()
 
 if request.method ~= "POST" then
     response:setStatus(405)
@@ -28,7 +30,7 @@ local user, _ = utils.get_session_user(db)
 
 if not user then
     db:close()
-    response:redirect("/auth/realms/master/protocol/openid-connect/auth?client_id=" .. utils.url_encode(client_id or "") .. 
+    response:redirect("" .. RB .. "/protocol/openid-connect/auth?client_id=" .. utils.url_encode(client_id or "") .. 
                       "&redirect_uri=" .. utils.url_encode(redirect_uri) .. 
                       "&state=" .. utils.url_encode(state or ""), 302)
     return
@@ -39,7 +41,7 @@ local ok, err = utils.validate_security_token(db, form, "consent")
 
 if not ok then
     db:close()
-    response:redirect("/auth/realms/master/protocol/openid-connect/auth?client_id=" .. utils.url_encode(client_id or "") .. 
+    response:redirect("" .. RB .. "/protocol/openid-connect/auth?client_id=" .. utils.url_encode(client_id or "") .. 
                       "&redirect_uri=" .. utils.url_encode(redirect_uri) .. 
                       "&state=" .. utils.url_encode(state or "") .. 
                       "&error=" .. utils.url_encode(err or "Security token validation failed"), 302)
@@ -49,7 +51,7 @@ end
 local decision = form.decision or "deny"
 
 if decision == "accept" then
-    utils.save_user_consent(db, user, client_id)
+    utils.save_user_consent(db, user, client_id, scope)
     
     local event = {
         type = "CONSENT_GRANT",
@@ -58,7 +60,7 @@ if decision == "accept" then
         time = os.time(),
         detail = "User granted consent for client: " .. (client_id or "")
     }
-    local events_str = db:get("meta:events")
+    local events_str = db:get(utils.rk("meta:events"))
     local events = events_str and json.decode(events_str) or {}
     table.insert(events, event)
     if #events > 100 then
@@ -66,7 +68,7 @@ if decision == "accept" then
         for i = #events - 99, #events do table.insert(trimmed, events[i]) end
         events = trimmed
     end
-    db:put("meta:events", json.encode(events))
+    db:put(utils.rk("meta:events"), json.encode(events))
     
     local params_out = {}
     local roles = utils.get_user_roles(db, user)
@@ -83,7 +85,7 @@ if decision == "accept" then
             scope = scope,
             created = os.time()
         }
-        db:put("code:" .. code, json.encode(code_data))
+        db:put(utils.rk("code:") .. code, json.encode(code_data))
         params_out["code"] = code
     end
     

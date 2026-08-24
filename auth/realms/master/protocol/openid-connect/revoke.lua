@@ -1,4 +1,5 @@
 local utils = dofile("public/lib/utils.lua")
+utils.apply_security_headers()
 
 if request.method ~= "POST" then
     response:setStatus(405)
@@ -20,10 +21,10 @@ if token and token ~= "" then
         time = os.time(),
         detail = "Revoked token: " .. string.sub(token, 1, 12) .. "..."
     }
-    local events_str = db:get("meta:events")
+    local events_str = db:get(utils.rk("meta:events"))
     local events = events_str and json.decode(events_str) or {}
     table.insert(events, event)
-    db:put("meta:events", json.encode(events))
+    db:put(utils.rk("meta:events"), json.encode(events))
     
     db:close()
 end

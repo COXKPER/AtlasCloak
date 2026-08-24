@@ -1,4 +1,5 @@
 local utils = dofile("public/lib/utils.lua")
+utils.apply_security_headers()
 
 if request.method ~= "POST" then
     response:setStatus(405)
@@ -36,7 +37,7 @@ if grant_type == "client_credentials" then
         return
     end
     
-    local cdata_str = db:get("client:" .. client_id)
+    local cdata_str = db:get(utils.rk("client:") .. client_id)
     if not cdata_str then
         db:close()
         response:setStatus(401)
@@ -57,15 +58,15 @@ if grant_type == "client_credentials" then
     
     local event = {
         type = "CLIENT_LOGIN",
-        username = "client:" .. client_id,
+        username = utils.rk("client:") .. client_id,
         ip = utils.get_client_ip(),
         time = os.time(),
         detail = "Issued token via client_credentials grant"
     }
-    local events_str = db:get("meta:events")
+    local events_str = db:get(utils.rk("meta:events"))
     local events = events_str and json.decode(events_str) or {}
     table.insert(events, event)
-    db:put("meta:events", json.encode(events))
+    db:put(utils.rk("meta:events"), json.encode(events))
     
     db:close()
     
@@ -82,7 +83,7 @@ if grant_type == "client_credentials" then
 elseif grant_type == "authorization_code" then
     local code = form.code
     
-    local code_data_str = db:get("code:" .. (code or ""))
+    local code_data_str = db:get(utils.rk("code:") .. (code or ""))
     if not code_data_str then
         db:close()
         response:setStatus(400)
@@ -91,7 +92,7 @@ elseif grant_type == "authorization_code" then
     end
     
     local code_data = json.decode(code_data_str)
-    db:delete("code:" .. code) -- Single-use immediate delete
+    db:delete(utils.rk("code:") .. code) -- Single-use immediate delete
     
     -- K3: Check authorization code expiration (max 60 seconds)
     if code_data.created and (os.time() - code_data.created > 60) then
@@ -133,7 +134,7 @@ elseif grant_type == "authorization_code" then
         end
     end
     
-    local user_data_str = db:get("user:" .. code_data.username)
+    local user_data_str = db:get(utils.rk("user:") .. code_data.username)
     if user_data_str then
         local user_data = json.decode(user_data_str)
         if user_data.enabled == false then
@@ -155,7 +156,7 @@ elseif grant_type == "authorization_code" then
         time = os.time(),
         detail = "Issued token via authorization_code grant"
     }
-    local events_str = db:get("meta:events")
+    local events_str = db:get(utils.rk("meta:events"))
     local events = events_str and json.decode(events_str) or {}
     table.insert(events, event)
     if #events > 100 then
@@ -163,7 +164,7 @@ elseif grant_type == "authorization_code" then
         for i = #events - 99, #events do table.insert(trimmed, events[i]) end
         events = trimmed
     end
-    db:put("meta:events", json.encode(events))
+    db:put(utils.rk("meta:events"), json.encode(events))
     
     db:close()
     
@@ -191,7 +192,7 @@ elseif grant_type == "password" then
         return
     end
     
-    local user_data_str = db:get("user:" .. (username or ""))
+    local user_data_str = db:get(utils.rk("user:") .. (username or ""))
     if not user_data_str then
         db:close()
         response:setStatus(401)
@@ -218,7 +219,7 @@ elseif grant_type == "password" then
     
     if needs_rehash then
         user_data.password = utils.hash_password(password)
-        db:put("user:" .. username, json.encode(user_data))
+        db:put(utils.rk("user:") .. username, json.encode(user_data))
     end
     
     utils.reset_login_failures(db, username)
@@ -232,7 +233,7 @@ elseif grant_type == "password" then
         time = os.time(),
         detail = "Issued token via password grant"
     }
-    local events_str = db:get("meta:events")
+    local events_str = db:get(utils.rk("meta:events"))
     local events = events_str and json.decode(events_str) or {}
     table.insert(events, event)
     if #events > 100 then
@@ -240,7 +241,7 @@ elseif grant_type == "password" then
         for i = #events - 99, #events do table.insert(trimmed, events[i]) end
         events = trimmed
     end
-    db:put("meta:events", json.encode(events))
+    db:put(utils.rk("meta:events"), json.encode(events))
     
     db:close()
     
@@ -256,7 +257,7 @@ elseif grant_type == "password" then
 -- 4. Refresh Token Grant
 elseif grant_type == "refresh_token" then
     local r_token = form.refresh_token
-    local r_data_str = db:get("refresh_token:" .. (r_token or ""))
+    local r_data_str = db:get(utils.rk("refresh_token:") .. (r_token or ""))
     if not r_data_str then
         db:close()
         response:setStatus(400)
@@ -265,7 +266,7 @@ elseif grant_type == "refresh_token" then
     end
     
     local r_data = json.decode(r_data_str)
-    db:delete("refresh_token:" .. r_token) -- Token Rotation
+    db:delete(utils.rk("refresh_token:") .. r_token) -- Token Rotation
     
     -- K4: Check refresh token expiry
     if r_data.exp and os.time() > r_data.exp then
@@ -295,6 +296,91 @@ elseif grant_type == "refresh_token" then
         expires_in = lifespan,
         refresh_token = new_refresh_token,
         scope = "openid profile email"
+    })
+    return
+
+-- 5. Device Authorization Grant (RFC 8628 §3.4)
+elseif grant_type == "urn:ietf:params:oauth:grant-type:device_code" then
+    local dc = form.device_code or ""
+    local rec_str = db:get(utils.rk("dev:") .. dc)
+
+    if not rec_str then
+        db:close()
+        response:setStatus(400)
+        response:json({ error = "invalid_grant", error_description = "Invalid device code" })
+        return
+    end
+
+    local rec = json.decode(rec_str)
+
+    -- Client binding check.
+    local req_client = client_id or form.client_id
+    if rec.client_id and rec.client_id ~= "" and req_client and req_client ~= "" and req_client ~= rec.client_id then
+        db:delete(utils.rk("dev:" .. dc))
+        db:close()
+        response:setStatus(400)
+        response:json({ error = "invalid_grant", error_description = "device_code was issued to another client" })
+        return
+    end
+
+    if os.time() > (rec.exp or 0) then
+        db:delete(utils.rk("dev:" .. dc))
+        db:delete(utils.rk("dev_uc:" .. (rec.user_code or "")))
+        db:close()
+        response:setStatus(400)
+        response:json({ error = "expired_token", error_description = "Device code expired" })
+        return
+    end
+
+    if rec.status == "denied" then
+        db:delete(utils.rk("dev:" .. dc))
+        db:close()
+        response:setStatus(400)
+        response:json({ error = "access_denied", error_description = "User denied the device request" })
+        return
+    end
+
+    if rec.status ~= "approved" then
+        -- RFC 8628 §3.5: enforce polling interval.
+        local now = os.time()
+        local since = now - (tonumber(rec.last_poll) or 0)
+        rec.last_poll = now
+        db:put(utils.rk("dev:" .. dc), json.encode(rec))
+        db:close()
+        if since < 5 then
+            response:setStatus(400)
+            response:json({ error = "slow_down", error_description = "Poll faster than interval; slow down" })
+        else
+            response:setStatus(400)
+            response:json({ error = "authorization_pending", error_description = "User has not yet approved the request" })
+        end
+        return
+    end
+
+    db:delete(utils.rk("dev:" .. dc))
+
+    local roles = utils.get_user_roles(db, rec.approved_by)
+    local access_token, refresh_token, lifespan = utils.issue_token(db, rec.approved_by, rec.client_id, rec.scope or "openid profile email", roles, false)
+
+    local event = {
+        type = "DEVICE_FLOW_TOKEN",
+        username = rec.approved_by,
+        ip = utils.get_client_ip(),
+        time = os.time(),
+        detail = "Token issued via device flow for client: " .. (rec.client_id or "?")
+    }
+    local events_str = db:get(utils.rk("meta:events"))
+    local events = events_str and json.decode(events_str) or {}
+    table.insert(events, event)
+    db:put(utils.rk("meta:events"), json.encode(events))
+    db:close()
+
+    response:json({
+        access_token = access_token,
+        token_type = "Bearer",
+        expires_in = lifespan,
+        refresh_token = refresh_token,
+        scope = rec.scope or "openid profile email"
     })
     return
 end

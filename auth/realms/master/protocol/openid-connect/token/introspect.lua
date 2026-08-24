@@ -1,4 +1,6 @@
 local utils = dofile("public/lib/utils.lua")
+utils.apply_security_headers()
+local RB = "/auth/realms/" .. utils.get_realm()
 
 if request.method ~= "POST" then
     response:setStatus(405)
@@ -39,7 +41,7 @@ response:json({
     sub = username,
     exp = exp,
     iat = payload.iat or (exp - 3600),
-    iss = utils.get_base_url() .. "/auth/realms/master",
+    iss = utils.get_base_url() .. "" .. RB .. "",
     token_type = "Bearer",
     roles = roles,
     realm_access = {

@@ -1,6 +1,8 @@
 local utils = dofile("public/lib/utils.lua")
+utils.apply_security_headers()
+local RB = "/auth/realms/" .. utils.get_realm()
 
-local base_url = utils.get_base_url() .. "/auth/realms/master"
+local base_url = utils.get_base_url() .. "" .. RB .. ""
 
 response:json({
     issuer = base_url,
@@ -10,6 +12,7 @@ response:json({
     jwks_uri = base_url .. "/protocol/openid-connect/certs",
     introspection_endpoint = base_url .. "/protocol/openid-connect/token/introspect",
     revocation_endpoint = base_url .. "/protocol/openid-connect/revoke",
+    device_authorization_endpoint = base_url .. "/protocol/openid-connect/device/authorize",
     end_session_endpoint = base_url .. "/protocol/openid-connect/logout",
     code_challenge_methods_supported = {
         "plain",
@@ -19,7 +22,8 @@ response:json({
         "authorization_code",
         "client_credentials",
         "password",
-        "refresh_token"
+        "refresh_token",
+        "urn:ietf:params:oauth:grant-type:device_code"
     },
     response_types_supported = {
         "code",

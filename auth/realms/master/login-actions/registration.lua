@@ -1,4 +1,5 @@
 local utils = dofile("public/lib/utils.lua")
+local RB = "/auth/realms/" .. utils.get_realm()
 
 local client_id = request:getParam("client_id")
 local redirect_uri = request:getParam("redirect_uri")
@@ -9,7 +10,7 @@ if not utils.is_registration_enabled(db) then
     db:close()
     local content = [[
         <div class="alert alert-error"><span class="alert-icon">✕</span> Registration is currently disabled by the administrator.</div>
-        <a href="/auth/realms/master/protocol/openid-connect/auth?client_id=]] .. (client_id or "") .. [[&redirect_uri=]] .. (redirect_uri or "") .. [[&state=]] .. (state or "") .. [[" class="btn btn-primary">Back to Login</a>
+        <a href="" .. RB .. "/protocol/openid-connect/auth?client_id=]] .. (client_id or "") .. [[&redirect_uri=]] .. (redirect_uri or "") .. [[&state=]] .. (state or "") .. [[" class="btn btn-primary">Back to Login</a>
     ]]
     response:write(utils.render_auth_page("Registration Disabled", "Self-registration is not available", content))
     return
@@ -29,7 +30,7 @@ if request.method == "GET" then
     local sec_token = utils.generate_security_token(db2, "register")
     db2:close()
 
-    local action_url = "/auth/realms/master/login-actions/registration?client_id=" .. (client_id or "") .. "&redirect_uri=" .. (redirect_uri or "") .. "&state=" .. (state or "")
+    local action_url = "" .. RB .. "/login-actions/registration?client_id=" .. (client_id or "") .. "&redirect_uri=" .. (redirect_uri or "") .. "&state=" .. (state or "")
 
     local policy_hint = "Min " .. policy.min_length .. " chars"
     if policy.req_upper then policy_hint = policy_hint .. ", uppercase" end
@@ -64,7 +65,7 @@ if request.method == "GET" then
             <button type="submit" class="btn btn-primary">Register</button>
         </form>
         <div class="footer-links">
-            Already have an account? <a href="/auth/realms/master/protocol/openid-connect/auth?client_id=]] .. (client_id or "") .. [[&redirect_uri=]] .. (redirect_uri or "") .. [[&state=]] .. (state or "") .. [[">Sign In</a>
+            Already have an account? <a href="" .. RB .. "/protocol/openid-connect/auth?client_id=]] .. (client_id or "") .. [[&redirect_uri=]] .. (redirect_uri or "") .. [[&state=]] .. (state or "") .. [[">Sign In</a>
         </div>
     ]]
 
@@ -92,20 +93,20 @@ if request.method == "POST" then
             time = os.time(),
             detail = "Blocked signup: " .. (err_msg or "Invalid security token")
         }
-        local events_str = db3:get("meta:events")
+        local events_str = db3:get(utils.rk("meta:events"))
         local events = events_str and json.decode(events_str) or {}
         table.insert(events, event)
-        db3:put("meta:events", json.encode(events))
+        db3:put(utils.rk("meta:events"), json.encode(events))
         
         db3:close()
-        response:redirect("/auth/realms/master/login-actions/registration?client_id=" .. (client_id or "") .. "&redirect_uri=" .. (redirect_uri or "") .. "&state=" .. (state or "") .. "&error=" .. utils.url_encode(err_msg or "Security validation failed"), 302)
+        response:redirect("" .. RB .. "/login-actions/registration?client_id=" .. (client_id or "") .. "&redirect_uri=" .. (redirect_uri or "") .. "&state=" .. (state or "") .. "&error=" .. utils.url_encode(err_msg or "Security validation failed"), 302)
         return
     end
 
     -- 2. Validate Fields
     if not username or username == "" or not password or password == "" then
         db3:close()
-        response:redirect("/auth/realms/master/login-actions/registration?client_id=" .. (client_id or "") .. "&redirect_uri=" .. (redirect_uri or "") .. "&state=" .. (state or "") .. "&error=All+fields+are+required", 302)
+        response:redirect("" .. RB .. "/login-actions/registration?client_id=" .. (client_id or "") .. "&redirect_uri=" .. (redirect_uri or "") .. "&state=" .. (state or "") .. "&error=All+fields+are+required", 302)
         return
     end
 
@@ -113,7 +114,7 @@ if request.method == "POST" then
     local pw_ok, pw_err = utils.validate_password_policy(db3, password)
     if not pw_ok then
         db3:close()
-        response:redirect("/auth/realms/master/login-actions/registration?client_id=" .. (client_id or "") .. "&redirect_uri=" .. (redirect_uri or "") .. "&state=" .. (state or "") .. "&error=" .. utils.url_encode(pw_err), 302)
+        response:redirect("" .. RB .. "/login-actions/registration?client_id=" .. (client_id or "") .. "&redirect_uri=" .. (redirect_uri or "") .. "&state=" .. (state or "") .. "&error=" .. utils.url_encode(pw_err), 302)
         return
     end
 
@@ -126,9 +127,9 @@ if request.method == "POST" then
     end
 
     -- Check if user exists
-    if db3:get("user:" .. username) then
+    if db3:get(utils.rk("user:") .. username) then
         db3:close()
-        response:redirect("/auth/realms/master/login-actions/registration?client_id=" .. (client_id or "") .. "&redirect_uri=" .. (redirect_uri or "") .. "&state=" .. (state or "") .. "&error=Username+already+exists", 302)
+        response:redirect("" .. RB .. "/login-actions/registration?client_id=" .. (client_id or "") .. "&redirect_uri=" .. (redirect_uri or "") .. "&state=" .. (state or "") .. "&error=Username+already+exists", 302)
         return
     end
 
@@ -142,14 +143,14 @@ if request.method == "POST" then
         createdAt = os.time()
     }
 
-    db3:put("user:" .. username, json.encode(user_data))
+    db3:put(utils.rk("user:") .. username, json.encode(user_data))
     utils.set_user_roles(db3, username, { "user" })
 
     -- Add to user list
-    local user_list_str = db3:get("meta:user_list")
+    local user_list_str = db3:get(utils.rk("meta:user_list"))
     local user_list = user_list_str and json.decode(user_list_str) or {}
     table.insert(user_list, username)
-    db3:put("meta:user_list", json.encode(user_list))
+    db3:put(utils.rk("meta:user_list"), json.encode(user_list))
 
     -- Log event
     local event = {
@@ -159,14 +160,14 @@ if request.method == "POST" then
         time = os.time(),
         detail = "User registered"
     }
-    local events_str = db3:get("meta:events")
+    local events_str = db3:get(utils.rk("meta:events"))
     local events = events_str and json.decode(events_str) or {}
     table.insert(events, event)
-    db3:put("meta:events", json.encode(events))
+    db3:put(utils.rk("meta:events"), json.encode(events))
 
     db3:close()
 
-    response:redirect("/auth/realms/master/protocol/openid-connect/auth?client_id=" .. (client_id or "") .. "&redirect_uri=" .. (redirect_uri or "") .. "&state=" .. (state or "") .. "&error=Registration+successful!+Please+sign+in.", 302)
+    response:redirect("" .. RB .. "/protocol/openid-connect/auth?client_id=" .. (client_id or "") .. "&redirect_uri=" .. (redirect_uri or "") .. "&state=" .. (state or "") .. "&error=Registration+successful!+Please+sign+in.", 302)
     return
 end
 

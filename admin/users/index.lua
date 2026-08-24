@@ -13,17 +13,17 @@ end
 -- Handle Delete User action
 local delete_username = request:getParam("delete")
 if delete_username and delete_username ~= "" and delete_username ~= "admin" then
-    db:delete("user:" .. delete_username)
+    db:delete(utils.rk("user:") .. delete_username)
     db:delete("role:" .. delete_username)
     
-    local users_str = db:get("meta:user_list")
+    local users_str = db:get(utils.rk("meta:user_list"))
     if users_str then
         local users = json.decode(users_str)
         local new_users = {}
         for _, u in ipairs(users) do
             if u ~= delete_username then table.insert(new_users, u) end
         end
-        db:put("meta:user_list", json.encode(new_users))
+        db:put(utils.rk("meta:user_list"), json.encode(new_users))
     end
     
     local event = {
@@ -33,10 +33,10 @@ if delete_username and delete_username ~= "" and delete_username ~= "admin" then
         time = os.time(),
         detail = "Deleted user: " .. delete_username
     }
-    local events_str = db:get("meta:events")
+    local events_str = db:get(utils.rk("meta:events"))
     local events = events_str and json.decode(events_str) or {}
     table.insert(events, event)
-    db:put("meta:events", json.encode(events))
+    db:put(utils.rk("meta:events"), json.encode(events))
     
     db:close()
     response:redirect("/admin/users", 302)
@@ -46,11 +46,11 @@ end
 -- Handle Toggle Enable/Disable User action
 local toggle_user = request:getParam("toggle")
 if toggle_user and toggle_user ~= "" and toggle_user ~= "admin" then
-    local udata_str = db:get("user:" .. toggle_user)
+    local udata_str = db:get(utils.rk("user:") .. toggle_user)
     if udata_str then
         local udata = json.decode(udata_str)
         udata.enabled = not (udata.enabled ~= false)
-        db:put("user:" .. toggle_user, json.encode(udata))
+        db:put(utils.rk("user:") .. toggle_user, json.encode(udata))
         
         local event = {
             type = "USER_UPDATE",
@@ -59,10 +59,10 @@ if toggle_user and toggle_user ~= "" and toggle_user ~= "admin" then
             time = os.time(),
             detail = (udata.enabled and "Enabled" or "Disabled") .. " user: " .. toggle_user
         }
-        local events_str = db:get("meta:events")
+        local events_str = db:get(utils.rk("meta:events"))
         local events = events_str and json.decode(events_str) or {}
         table.insert(events, event)
-        db:put("meta:events", json.encode(events))
+        db:put(utils.rk("meta:events"), json.encode(events))
     end
     db:close()
     response:redirect("/admin/users", 302)
@@ -72,14 +72,14 @@ end
 -- Search filter
 local search_query = string.lower(request:getParam("search") or "")
 
-local users_str = db:get("meta:user_list")
+local users_str = db:get(utils.rk("meta:user_list"))
 local user_list = users_str and json.decode(users_str) or { "admin" }
 
 local rows = ""
 local count = 0
 
 for _, uname in ipairs(user_list) do
-    local udata_str = db:get("user:" .. uname)
+    local udata_str = db:get(utils.rk("user:") .. uname)
     if udata_str then
         local udata = json.decode(udata_str)
         local match = true

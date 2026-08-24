@@ -1,7 +1,7 @@
 local M = {}
 
 M.db_path = "./atlascloak.db"
-M.version = "1.3.0"
+M.version = "2.0.0"
 
 local sha256_mod = dofile("public/lib/sha256.lua")
 
@@ -63,8 +63,8 @@ end
 
 function M.base64url_decode(data)
     local pad = (4 - (#data % 4)) % 4
-    data = data .. string.rep('=', pad)
-    data = data:gsub('%-', '+'):gsub('_', '/')
+    data = data .. string.rep("=", pad)
+    data = data:gsub("%-", "+"):gsub("_", "/")
     return M.base64_decode(data)
 end
 
@@ -230,10 +230,12 @@ function M.parse_form(body)
 end
 
 function M.redirect(url, cookie_str)
+    M.apply_security_headers()
     response:setStatus(302)
     response:setHeader("Location", url)
     if cookie_str then
         response:setHeader("Set-Cookie", cookie_str)
+        response:setHeader("Cache-Control", "no-store")
     end
 end
 
@@ -248,13 +250,13 @@ end
 -- ─── Redirect URI Whitelist Management ───────────────────────────────────────
 
 function M.is_whitelist_enabled(db)
-    local val = db:get("setting:whitelist_enabled")
+    local val = db:get(M.rk("setting:whitelist_enabled"))
     if val == nil then return true end
     return val == "true"
 end
 
 function M.get_global_whitelist(db)
-    local val = db:get("setting:global_whitelist")
+    local val = db:get(M.rk("setting:global_whitelist"))
     if not val or val == "" then
         return "http://localhost:*\nhttp://127.0.0.1:*\nhttps://oidcdebugger.com/*\nhttps://oauth.pstmn.io/*"
     end
@@ -302,7 +304,7 @@ function M.validate_redirect_uri(db, client_id, redirect_uri)
     end
 
     -- 2. Check Client-Specific Registered Redirect URIs
-    local cdata_str = db:get("client:" .. (client_id or ""))
+    local cdata_str = db:get(M.rk("client:") .. (client_id or ""))
     if cdata_str then
         local cdata = json.decode(cdata_str)
         local allowed = cdata.redirect_uris or ""  -- fail closed by default
@@ -361,7 +363,7 @@ end
 -- ─── JWT & Token Management ───────────────────────────────────────────────────
 
 function M.get_jwt_secret(db)
-    local secret = db:get("setting:jwt_secret")
+    local secret = db:get(M.rk("setting:jwt_secret"))
     if not secret or secret == "" then
         -- T2: 256-bit CSPRNG secret (Go crypto/rand bridge)
         if crypto and crypto.random_hex then
@@ -369,7 +371,7 @@ function M.get_jwt_secret(db)
         else
             secret = M.uuid() .. "-" .. M.uuid()
         end
-        db:put("setting:jwt_secret", secret)
+        db:put(M.rk("setting:jwt_secret"), secret)
     end
     return secret
 end
@@ -419,10 +421,10 @@ function M.verify_jwt(jwt_str, secret)
 end
 
 function M.issue_token(db, username_or_client, client_id, scope, roles, is_client)
-    local token_format = db:get("setting:token_format") or "jwt"
-    local lifespan = tonumber(db:get("setting:token_lifespan")) or 3600
+    local token_format = db:get(M.rk("setting:token_format")) or "jwt"
+    local lifespan = tonumber(db:get(M.rk("setting:token_lifespan"))) or 3600
     local exp_time = os.time() + lifespan
-    local issuer = M.get_base_url() .. "/auth/realms/master"
+    local issuer = M.get_base_url() .. M.realm_url()
     
     local access_token = ""
     local refresh_token = M.uuid()
@@ -444,7 +446,7 @@ function M.issue_token(db, username_or_client, client_id, scope, roles, is_clien
         }
         
         if not is_client then
-            local udata_str = db:get("user:" .. username_or_client)
+            local udata_str = db:get(M.rk("user:") .. username_or_client)
             if udata_str then
                 local udata = json.decode(udata_str)
                 payload.preferred_username = udata.username
@@ -465,7 +467,7 @@ function M.issue_token(db, username_or_client, client_id, scope, roles, is_clien
             exp = exp_time,
             is_client = is_client or false
         }
-        db:put("token:" .. access_token, json.encode(token_data))
+        db:put(M.rk("token:") .. access_token, json.encode(token_data))
     end
     
     local r_data = {
@@ -475,15 +477,15 @@ function M.issue_token(db, username_or_client, client_id, scope, roles, is_clien
         is_client = is_client or false,
         exp = os.time() + (lifespan * 7)
     }
-    db:put("refresh_token:" .. refresh_token, json.encode(r_data))
+    db:put(M.rk("refresh_token:") .. refresh_token, json.encode(r_data))
     
     return access_token, refresh_token, lifespan
 end
 
 function M.issue_id_token(db, username, client_id, nonce)
     local secret = M.get_jwt_secret(db)
-    local lifespan = tonumber(db:get("setting:token_lifespan")) or 3600
-    local issuer = M.get_base_url() .. "/auth/realms/master"
+    local lifespan = tonumber(db:get(M.rk("setting:token_lifespan"))) or 3600
+    local issuer = M.get_base_url() .. M.realm_url()
     
     local payload = {
         iss = issuer,
@@ -499,7 +501,7 @@ function M.issue_id_token(db, username, client_id, nonce)
         payload.nonce = nonce
     end
     
-    local udata_str = db:get("user:" .. username)
+    local udata_str = db:get(M.rk("user:") .. username)
     if udata_str then
         local udata = json.decode(udata_str)
         payload.preferred_username = udata.username
@@ -515,7 +517,7 @@ end
 function M.validate_token(db, token_str)
     if not token_str or token_str == "" then return false, nil, "Missing token" end
     
-    if db:get("revoked:" .. token_str) then
+    if db:get(M.rk("revoked:") .. token_str) then
         return false, nil, "Token has been revoked"
     end
     
@@ -523,13 +525,13 @@ function M.validate_token(db, token_str)
         local secret = M.get_jwt_secret(db)
         local ok, payload, err = M.verify_jwt(token_str, secret)
         if not ok then return false, nil, err end
-        if payload.jti and db:get("revoked:" .. payload.jti) then
+        if payload.jti and db:get(M.rk("revoked:") .. payload.jti) then
             return false, nil, "Token has been revoked"
         end
         return true, payload, nil
     end
     
-    local token_data_str = db:get("token:" .. token_str)
+    local token_data_str = db:get(M.rk("token:") .. token_str)
     if not token_data_str then
         return false, nil, "Invalid token"
     end
@@ -543,9 +545,9 @@ end
 function M.revoke_token(db, token_str)
     if not token_str or token_str == "" then return false end
     
-    db:delete("token:" .. token_str)
-    db:delete("refresh_token:" .. token_str)
-    db:put("revoked:" .. token_str, tostring(os.time()))
+    db:delete(M.rk("token:") .. token_str)
+    db:delete(M.rk("refresh_token:") .. token_str)
+    db:put(M.rk("revoked:") .. token_str, tostring(os.time()))
     
     if string.find(token_str, "%.") then
         local h_enc, p_enc, _ = string.match(token_str, "^([^%.]+)%.([^%.]+)%.([^%.]+)$")
@@ -553,7 +555,7 @@ function M.revoke_token(db, token_str)
             local payload_str = M.base64url_decode(p_enc)
             local payload = json.decode(payload_str)
             if payload and payload.jti then
-                db:put("revoked:" .. payload.jti, tostring(os.time()))
+                db:put(M.rk("revoked:") .. payload.jti, tostring(os.time()))
             end
         end
     end
@@ -563,9 +565,9 @@ end
 -- ─── Brute Force Protection & Lockout ────────────────────────────────────────
 
 function M.get_brute_force_config(db)
-    local enabled = db:get("setting:brute_force_enabled")
-    local max_failures = tonumber(db:get("setting:max_login_failures")) or 5
-    local lock_duration = tonumber(db:get("setting:lockout_duration")) or 900
+    local enabled = db:get(M.rk("setting:brute_force_enabled"))
+    local max_failures = tonumber(db:get(M.rk("setting:max_login_failures"))) or 5
+    local lock_duration = tonumber(db:get(M.rk("setting:lockout_duration"))) or 900
     return {
         enabled = (enabled == nil or enabled == "true"),
         max_failures = max_failures,
@@ -577,7 +579,7 @@ function M.check_account_locked(db, username)
     local cfg = M.get_brute_force_config(db)
     if not cfg.enabled then return false, 0 end
     
-    local fail_str = db:get("fails:" .. username)
+    local fail_str = db:get(M.rk("fails:") .. username)
     if not fail_str then return false, 0 end
     
     local f_data = json.decode(fail_str)
@@ -591,7 +593,7 @@ end
 
 function M.record_login_failure(db, username, ip)
     local cfg = M.get_brute_force_config(db)
-    local fail_str = db:get("fails:" .. username)
+    local fail_str = db:get(M.rk("fails:") .. username)
     local f_data = fail_str and json.decode(fail_str) or { count = 0, last_fail = 0 }
     
     if os.time() - (f_data.last_fail or 0) > cfg.lock_duration then
@@ -607,26 +609,26 @@ function M.record_login_failure(db, username, ip)
         just_locked = true
     end
     
-    db:put("fails:" .. username, json.encode(f_data))
+    db:put(M.rk("fails:") .. username, json.encode(f_data))
     return just_locked, f_data.count, cfg.max_failures, f_data.locked_until
 end
 
 function M.reset_login_failures(db, username)
-    db:delete("fails:" .. username)
+    db:delete(M.rk("fails:") .. username)
 end
 
 function M.unlock_account(db, username)
-    db:delete("fails:" .. username)
+    db:delete(M.rk("fails:") .. username)
 end
 
 -- ─── Password Policy ──────────────────────────────────────────────────────────
 
 function M.get_password_policy(db)
-    local min_len = tonumber(db:get("setting:pwd_min_length")) or 6
-    local req_upper = (db:get("setting:pwd_req_upper") == "true")
-    local req_lower = (db:get("setting:pwd_req_lower") == "true")
-    local req_number = (db:get("setting:pwd_req_number") == "true")
-    local req_symbol = (db:get("setting:pwd_req_symbol") == "true")
+    local min_len = tonumber(db:get(M.rk("setting:pwd_min_length"))) or 6
+    local req_upper = (db:get(M.rk("setting:pwd_req_upper")) == "true")
+    local req_lower = (db:get(M.rk("setting:pwd_req_lower")) == "true")
+    local req_number = (db:get(M.rk("setting:pwd_req_number")) == "true")
+    local req_symbol = (db:get(M.rk("setting:pwd_req_symbol")) == "true")
     return {
         min_length = min_len,
         req_upper = req_upper,
@@ -659,13 +661,13 @@ end
 -- ─── RBAC & Roles ─────────────────────────────────────────────────────────────
 
 function M.get_roles(db)
-    local roles_str = db:get("meta:roles_list")
+    local roles_str = db:get(M.rk("meta:roles_list"))
     local roles = roles_str and json.decode(roles_str) or { "admin", "user" }
     return roles
 end
 
 function M.get_role_details(db, role_name)
-    local r_str = db:get("role_def:" .. role_name)
+    local r_str = db:get(M.rk("role_def:") .. role_name)
     if r_str then return json.decode(r_str) end
     return { name = role_name, description = (role_name == "admin" and "Realm Administrator" or "Standard User") }
 end
@@ -678,9 +680,9 @@ function M.add_role(db, role_name, description)
     end
     if not found then
         table.insert(roles, role_name)
-        db:put("meta:roles_list", json.encode(roles))
+        db:put(M.rk("meta:roles_list"), json.encode(roles))
     end
-    db:put("role_def:" .. role_name, json.encode({ name = role_name, description = description or "" }))
+    db:put(M.rk("role_def:") .. role_name, json.encode({ name = role_name, description = description or "" }))
 end
 
 function M.delete_role(db, role_name)
@@ -690,21 +692,21 @@ function M.delete_role(db, role_name)
     for _, r in ipairs(roles) do
         if r ~= role_name then table.insert(new_roles, r) end
     end
-    db:put("meta:roles_list", json.encode(new_roles))
-    db:delete("role_def:" .. role_name)
+    db:put(M.rk("meta:roles_list"), json.encode(new_roles))
+    db:delete(M.rk("role_def:") .. role_name)
     return true
 end
 
 -- ─── User Groups & Group-Based Access Control (GBAC) ──────────────────────────
 
 function M.get_groups(db)
-    local grps_str = db:get("meta:groups_list")
+    local grps_str = db:get(M.rk("meta:groups_list"))
     local grps = grps_str and json.decode(grps_str) or {}
     return grps
 end
 
 function M.get_group_details(db, group_name)
-    local g_str = db:get("group_def:" .. group_name)
+    local g_str = db:get(M.rk("group_def:") .. group_name)
     if g_str then return json.decode(g_str) end
     return { name = group_name, description = "", roles = {} }
 end
@@ -717,9 +719,9 @@ function M.save_group(db, group_name, description, roles_table)
     end
     if not found then
         table.insert(grps, group_name)
-        db:put("meta:groups_list", json.encode(grps))
+        db:put(M.rk("meta:groups_list"), json.encode(grps))
     end
-    db:put("group_def:" .. group_name, json.encode({
+    db:put(M.rk("group_def:") .. group_name, json.encode({
         name = group_name,
         description = description or "",
         roles = roles_table or {}
@@ -732,23 +734,23 @@ function M.delete_group(db, group_name)
     for _, g in ipairs(grps) do
         if g ~= group_name then table.insert(new_grps, g) end
     end
-    db:put("meta:groups_list", json.encode(new_grps))
-    db:delete("group_def:" .. group_name)
+    db:put(M.rk("meta:groups_list"), json.encode(new_grps))
+    db:delete(M.rk("group_def:") .. group_name)
     return true
 end
 
 function M.get_user_groups(db, username)
-    local grps_str = db:get("user_groups:" .. username)
+    local grps_str = db:get(M.rk("user_groups:") .. username)
     if grps_str then return json.decode(grps_str) end
     return {}
 end
 
 function M.set_user_groups(db, username, groups_table)
-    db:put("user_groups:" .. username, json.encode(groups_table or {}))
+    db:put(M.rk("user_groups:") .. username, json.encode(groups_table or {}))
 end
 
 function M.get_user_roles(db, username)
-    local direct_roles_str = db:get("user_roles:" .. username)
+    local direct_roles_str = db:get(M.rk("user_roles:") .. username)
     local direct_roles = direct_roles_str and json.decode(direct_roles_str) or { db:get("role:" .. username) or "user" }
     
     local role_set = {}
@@ -771,7 +773,7 @@ function M.get_user_roles(db, username)
 end
 
 function M.set_user_roles(db, username, roles_table)
-    db:put("user_roles:" .. username, json.encode(roles_table))
+    db:put(M.rk("user_roles:") .. username, json.encode(roles_table))
     local primary = "user"
     for _, r in ipairs(roles_table) do
         if r == "admin" then primary = "admin" break end
@@ -785,7 +787,7 @@ function M.is_consent_required(db, client_id)
     if not client_id or client_id == "" or client_id == "account" or client_id == "admin-console" then
         return false
     end
-    local cdata_str = db:get("client:" .. client_id)
+    local cdata_str = db:get(M.rk("client:") .. client_id)
     if not cdata_str then
         return true
     end
@@ -796,13 +798,51 @@ function M.is_consent_required(db, client_id)
     return (cdata.consent_required == true or cdata.consent_required == "true" or cdata.consent_required == "on")
 end
 
-function M.has_user_consented(db, username, client_id)
-    local val = db:get("consent:" .. username .. ":" .. client_id)
-    return val == "true"
+--- Scope-aware consent check. Legacy grants stored as plain "true" remain a
+--- full grant (backward compatible); new grants store the granted scope list.
+function M.has_user_consented(db, username, client_id, requested_scopes)
+    local val = db:get(M.rk("consent:") .. username .. ":" .. client_id)
+    if not val then return false end
+    if val == "true" then return true end -- legacy blanket grant
+    local granted = json.decode(val)
+    if type(granted) ~= "table" then return false end
+    local set = {}
+    for _, s in ipairs(granted) do set[s] = true end
+    for s in string.gmatch(requested_scopes or "", "%S+") do
+        if s ~= "openid" and not set[s] then return false end
+    end
+    return true
 end
 
-function M.save_user_consent(db, username, client_id)
-    db:put("consent:" .. username .. ":" .. client_id, "true")
+function M.save_user_consent(db, username, client_id, scopes)
+    local list = {}
+    for s in string.gmatch(scopes or "openid profile email", "%S+") do table.insert(list, s) end
+    db:put(M.rk("consent:") .. username .. ":" .. client_id, json.encode(list))
+end
+
+-- ─── Realm Policies ──────────────────────────────────────────────────────────
+
+M.POLICY_DEFAULTS = {
+    pkce_required = false,        -- reject authorization-code flows without PKCE
+    mfa_required_all = false,     -- every login must complete TOTP enrollment+challenge
+    mfa_required_admins = false,  -- admin console access requires TOTP
+    passkeys_enabled = true,      -- WebAuthn/Passkey login + enrollment allowed
+    device_flow_enabled = true,   -- RFC 8628 device authorization grant allowed
+    consent_default = true,       -- clients without explicit config require consent
+}
+
+function M.get_policies(db)
+    local p = {}
+    for name, def in pairs(M.POLICY_DEFAULTS) do
+        local raw = db:get(M.rk("policy:" .. name))
+        p[name] = (raw == nil) and def or (raw == "true")
+    end
+    return p
+end
+
+--- Session idle timeout in seconds (0 = disabled).
+function M.get_session_idle_timeout(db)
+    return tonumber(db:get(M.rk("setting:session_idle_timeout"))) or 0
 end
 
 -- ─── Realm Export & Import ────────────────────────────────────────────────────
@@ -815,16 +855,16 @@ function M.export_realm_data(db)
         version = M.version,
         settings = {
             registration_enabled = M.is_registration_enabled(db),
-            token_lifespan = tonumber(db:get("setting:token_lifespan")) or 3600,
-            token_format = db:get("setting:token_format") or "jwt",
-            brute_force_enabled = (db:get("setting:brute_force_enabled") ~= "false"),
-            max_login_failures = tonumber(db:get("setting:max_login_failures")) or 5,
-            lockout_duration = tonumber(db:get("setting:lockout_duration")) or 900,
-            pwd_min_length = tonumber(db:get("setting:pwd_min_length")) or 6,
-            pwd_req_upper = (db:get("setting:pwd_req_upper") == "true"),
-            pwd_req_lower = (db:get("setting:pwd_req_lower") == "true"),
-            pwd_req_number = (db:get("setting:pwd_req_number") == "true"),
-            pwd_req_symbol = (db:get("setting:pwd_req_symbol") == "true")
+            token_lifespan = tonumber(db:get(M.rk("setting:token_lifespan"))) or 3600,
+            token_format = db:get(M.rk("setting:token_format")) or "jwt",
+            brute_force_enabled = (db:get(M.rk("setting:brute_force_enabled")) ~= "false"),
+            max_login_failures = tonumber(db:get(M.rk("setting:max_login_failures"))) or 5,
+            lockout_duration = tonumber(db:get(M.rk("setting:lockout_duration"))) or 900,
+            pwd_min_length = tonumber(db:get(M.rk("setting:pwd_min_length"))) or 6,
+            pwd_req_upper = (db:get(M.rk("setting:pwd_req_upper")) == "true"),
+            pwd_req_lower = (db:get(M.rk("setting:pwd_req_lower")) == "true"),
+            pwd_req_number = (db:get(M.rk("setting:pwd_req_number")) == "true"),
+            pwd_req_symbol = (db:get(M.rk("setting:pwd_req_symbol")) == "true")
         },
         roles = {},
         groups = {},
@@ -842,10 +882,10 @@ function M.export_realm_data(db)
         table.insert(export.groups, M.get_group_details(db, g))
     end
     
-    local users_str = db:get("meta:user_list")
+    local users_str = db:get(M.rk("meta:user_list"))
     local users = users_str and json.decode(users_str) or {}
     for _, uname in ipairs(users) do
-        local udata_str = db:get("user:" .. uname)
+        local udata_str = db:get(M.rk("user:") .. uname)
         if udata_str then
             local udata = json.decode(udata_str)
             udata.roles = M.get_user_roles(db, uname)
@@ -854,10 +894,10 @@ function M.export_realm_data(db)
         end
     end
     
-    local clients_str = db:get("meta:client_list")
+    local clients_str = db:get(M.rk("meta:client_list"))
     local clients = clients_str and json.decode(clients_str) or { "account", "admin-console" }
     for _, cid in ipairs(clients) do
-        local cdata_str = db:get("client:" .. cid)
+        local cdata_str = db:get(M.rk("client:") .. cid)
         if cdata_str then
             table.insert(export.clients, json.decode(cdata_str))
         else
@@ -872,22 +912,22 @@ function M.import_realm_data(db, import_data)
     if type(import_data) ~= "table" then return false, "Invalid JSON data structure" end
     
     if import_data.displayName then
-        db:put("setting:realm_display_name", import_data.displayName)
+        db:put(M.rk("setting:realm_display_name"), import_data.displayName)
     end
     
     if import_data.settings then
         local s = import_data.settings
-        if s.registration_enabled ~= nil then db:put("setting:registration_enabled", s.registration_enabled and "true" or "false") end
-        if s.token_lifespan then db:put("setting:token_lifespan", tostring(s.token_lifespan)) end
-        if s.token_format then db:put("setting:token_format", s.token_format) end
-        if s.brute_force_enabled ~= nil then db:put("setting:brute_force_enabled", s.brute_force_enabled and "true" or "false") end
-        if s.max_login_failures then db:put("setting:max_login_failures", tostring(s.max_login_failures)) end
-        if s.lockout_duration then db:put("setting:lockout_duration", tostring(s.lockout_duration)) end
-        if s.pwd_min_length then db:put("setting:pwd_min_length", tostring(s.pwd_min_length)) end
-        if s.pwd_req_upper ~= nil then db:put("setting:pwd_req_upper", s.pwd_req_upper and "true" or "false") end
-        if s.pwd_req_lower ~= nil then db:put("setting:pwd_req_lower", s.pwd_req_lower and "true" or "false") end
-        if s.pwd_req_number ~= nil then db:put("setting:pwd_req_number", s.pwd_req_number and "true" or "false") end
-        if s.pwd_req_symbol ~= nil then db:put("setting:pwd_req_symbol", s.pwd_req_symbol and "true" or "false") end
+        if s.registration_enabled ~= nil then db:put(M.rk("setting:registration_enabled"), s.registration_enabled and "true" or "false") end
+        if s.token_lifespan then db:put(M.rk("setting:token_lifespan"), tostring(s.token_lifespan)) end
+        if s.token_format then db:put(M.rk("setting:token_format"), s.token_format) end
+        if s.brute_force_enabled ~= nil then db:put(M.rk("setting:brute_force_enabled"), s.brute_force_enabled and "true" or "false") end
+        if s.max_login_failures then db:put(M.rk("setting:max_login_failures"), tostring(s.max_login_failures)) end
+        if s.lockout_duration then db:put(M.rk("setting:lockout_duration"), tostring(s.lockout_duration)) end
+        if s.pwd_min_length then db:put(M.rk("setting:pwd_min_length"), tostring(s.pwd_min_length)) end
+        if s.pwd_req_upper ~= nil then db:put(M.rk("setting:pwd_req_upper"), s.pwd_req_upper and "true" or "false") end
+        if s.pwd_req_lower ~= nil then db:put(M.rk("setting:pwd_req_lower"), s.pwd_req_lower and "true" or "false") end
+        if s.pwd_req_number ~= nil then db:put(M.rk("setting:pwd_req_number"), s.pwd_req_number and "true" or "false") end
+        if s.pwd_req_symbol ~= nil then db:put(M.rk("setting:pwd_req_symbol"), s.pwd_req_symbol and "true" or "false") end
     end
     
     if import_data.roles and type(import_data.roles) == "table" then
@@ -896,9 +936,9 @@ function M.import_realm_data(db, import_data)
             local rname = type(r) == "table" and r.name or r
             local rdesc = type(r) == "table" and r.description or ""
             table.insert(rlist, rname)
-            db:put("role_def:" .. rname, json.encode({ name = rname, description = rdesc }))
+            db:put(M.rk("role_def:") .. rname, json.encode({ name = rname, description = rdesc }))
         end
-        db:put("meta:roles_list", json.encode(rlist))
+        db:put(M.rk("meta:roles_list"), json.encode(rlist))
     end
 
     if import_data.groups and type(import_data.groups) == "table" then
@@ -906,21 +946,21 @@ function M.import_realm_data(db, import_data)
         for _, g in ipairs(import_data.groups) do
             if type(g) == "table" and g.name then
                 table.insert(glist, g.name)
-                db:put("group_def:" .. g.name, json.encode(g))
+                db:put(M.rk("group_def:") .. g.name, json.encode(g))
             end
         end
-        db:put("meta:groups_list", json.encode(glist))
+        db:put(M.rk("meta:groups_list"), json.encode(glist))
     end
     
     if import_data.users and type(import_data.users) == "table" then
-        local ulist_str = db:get("meta:user_list")
+        local ulist_str = db:get(M.rk("meta:user_list"))
         local ulist = ulist_str and json.decode(ulist_str) or {}
         local u_set = {}
         for _, u in ipairs(ulist) do u_set[u] = true end
         
         for _, u in ipairs(import_data.users) do
             if u.username then
-                db:put("user:" .. u.username, json.encode(u))
+                db:put(M.rk("user:") .. u.username, json.encode(u))
                 if u.roles then M.set_user_roles(db, u.username, u.roles) end
                 if u.groups then M.set_user_groups(db, u.username, u.groups) end
                 if not u_set[u.username] then
@@ -929,25 +969,25 @@ function M.import_realm_data(db, import_data)
                 end
             end
         end
-        db:put("meta:user_list", json.encode(ulist))
+        db:put(M.rk("meta:user_list"), json.encode(ulist))
     end
     
     if import_data.clients and type(import_data.clients) == "table" then
-        local clist_str = db:get("meta:client_list")
+        local clist_str = db:get(M.rk("meta:client_list"))
         local clist = clist_str and json.decode(clist_str) or {}
         local c_set = {}
         for _, c in ipairs(clist) do c_set[c] = true end
         
         for _, c in ipairs(import_data.clients) do
             if c.client_id then
-                db:put("client:" .. c.client_id, json.encode(c))
+                db:put(M.rk("client:") .. c.client_id, json.encode(c))
                 if not c_set[c.client_id] then
                     table.insert(clist, c.client_id)
                     c_set[c.client_id] = true
                 end
             end
         end
-        db:put("meta:client_list", json.encode(clist))
+        db:put(M.rk("meta:client_list"), json.encode(clist))
     end
     
     return true, nil
@@ -961,6 +1001,24 @@ function M.get_session_user(db)
     if not session_id then return nil, nil end
     local username = db:get("session:" .. session_id)
     if not username then return nil, nil end
+
+    -- Session idle timeout policy (per-realm, 0 = disabled)
+    local idle_timeout = M.get_session_idle_timeout(db)
+    if idle_timeout > 0 then
+        local sd_str = db:get("session_data:" .. session_id)
+        if sd_str then
+            local sd = json.decode(sd_str)
+            local last = tonumber(sd and sd.last_access) or os.time()
+            if os.time() - last > idle_timeout then
+                db:delete("session:" .. session_id)
+                db:delete("session_data:" .. session_id)
+                return nil, nil
+            end
+            sd.last_access = os.time()
+            db:put("session_data:" .. session_id, json.encode(sd))
+        end
+    end
+
     return username, session_id
 end
 
@@ -977,7 +1035,7 @@ end
 function M.ensure_admin_exists(db)
     -- Create the bootstrap admin only when missing. Never silently reset an
     -- existing admin's credentials from Lua pattern matching.
-    if not db:get("user:admin") then
+    if not db:get(M.rk("user:admin")) then
         local admin_data = {
             username = "admin",
             email = "admin@atlascloak.local",
@@ -989,70 +1047,70 @@ function M.ensure_admin_exists(db)
             must_change_password = true
         }
         admin_data.password = M.hash_password("admin")
-        db:put("user:admin", json.encode(admin_data))
+        db:put(M.rk("user:admin"), json.encode(admin_data))
         M.set_user_roles(db, "admin", { "admin", "user" })
     end
     
-    if db:get("meta:initialized") == "true" then
+    if db:get(M.rk("meta:initialized")) == "true" then
         return
     end
     
-    local user_list_str = db:get("meta:user_list")
+    local user_list_str = db:get(M.rk("meta:user_list"))
     local user_list = user_list_str and json.decode(user_list_str) or {}
     local has_admin = false
     for _, u in ipairs(user_list) do if u == "admin" then has_admin = true break end end
     if not has_admin then table.insert(user_list, "admin") end
-    db:put("meta:user_list", json.encode(user_list))
+    db:put(M.rk("meta:user_list"), json.encode(user_list))
     
-    if not db:get("meta:roles_list") then
-        db:put("meta:roles_list", json.encode({ "admin", "user", "editor", "viewer" }))
+    if not db:get(M.rk("meta:roles_list")) then
+        db:put(M.rk("meta:roles_list"), json.encode({ "admin", "user", "editor", "viewer" }))
         db:put("role_def:admin", json.encode({ name = "admin", description = "Administrator with full access" }))
         db:put("role_def:user", json.encode({ name = "user", description = "Standard user with account access" }))
         db:put("role_def:editor", json.encode({ name = "editor", description = "Content editor with write access" }))
         db:put("role_def:viewer", json.encode({ name = "viewer", description = "Read-only access role" }))
     end
 
-    if not db:get("meta:groups_list") then
-        db:put("meta:groups_list", json.encode({ "administrators", "developers", "staff" }))
+    if not db:get(M.rk("meta:groups_list")) then
+        db:put(M.rk("meta:groups_list"), json.encode({ "administrators", "developers", "staff" }))
         db:put("group_def:administrators", json.encode({ name = "administrators", description = "System Administrators Group", roles = { "admin", "user" } }))
         db:put("group_def:developers", json.encode({ name = "developers", description = "Development & Engineering Team", roles = { "editor", "user" } }))
         db:put("group_def:staff", json.encode({ name = "staff", description = "General Staff Members", roles = { "viewer", "user" } }))
     end
 
-    if not db:get("client:account") then
-        db:put("client:account", json.encode({ client_id = "account", name = "Account Console", client_type = "public", redirect_uris = "/account/*", enabled = true }))
+    if not db:get(M.rk("client:account")) then
+        db:put(M.rk("client:account"), json.encode({ client_id = "account", name = "Account Console", client_type = "public", redirect_uris = "/account/*", enabled = true }))
     end
-    if not db:get("client:admin-console") then
-        db:put("client:admin-console", json.encode({ client_id = "admin-console", name = "Admin Console", client_type = "public", redirect_uris = "/admin/*", enabled = true }))
+    if not db:get(M.rk("client:admin-console")) then
+        db:put(M.rk("client:admin-console"), json.encode({ client_id = "admin-console", name = "Admin Console", client_type = "public", redirect_uris = "/admin/*", enabled = true }))
     end
     if not db:get("client:m2m-service") then
         db:put("client:m2m-service", json.encode({ client_id = "m2m-service", name = "M2M Microservice", client_type = "confidential", secret = "secret123", redirect_uris = "/*", enabled = true }))
-        local clist_str = db:get("meta:client_list")
+        local clist_str = db:get(M.rk("meta:client_list"))
         local clist = clist_str and json.decode(clist_str) or { "account", "admin-console" }
         table.insert(clist, "m2m-service")
-        db:put("meta:client_list", json.encode(clist))
+        db:put(M.rk("meta:client_list"), json.encode(clist))
     end
     if not db:get("client:test-oidc-client") then
         db:put("client:test-oidc-client", json.encode({ client_id = "test-oidc-client", name = "Test OIDC Client", client_type = "public", redirect_uris = "http://localhost:3000/*, https://oidcdebugger.com/*", enabled = true }))
-        local clist_str = db:get("meta:client_list")
+        local clist_str = db:get(M.rk("meta:client_list"))
         local clist = clist_str and json.decode(clist_str) or { "account", "admin-console", "m2m-service" }
         table.insert(clist, "test-oidc-client")
-        db:put("meta:client_list", json.encode(clist))
+        db:put(M.rk("meta:client_list"), json.encode(clist))
     end
     
-    db:put("meta:initialized", "true")
+    db:put(M.rk("meta:initialized"), "true")
 end
 
 -- ─── Settings ─────────────────────────────────────────────────────────────────
 
 function M.is_registration_enabled(db)
-    local val = db:get("setting:registration_enabled")
+    local val = db:get(M.rk("setting:registration_enabled"))
     if val == nil then return true end
     return val == "true"
 end
 
 function M.set_registration_enabled(db, enabled)
-    db:put("setting:registration_enabled", enabled and "true" or "false")
+    db:put(M.rk("setting:registration_enabled"), enabled and "true" or "false")
 end
 
 function M.get_realm_display_name(db)
@@ -1061,7 +1119,7 @@ function M.get_realm_display_name(db)
         db = M.get_db()
         should_close = true
     end
-    local val = db:get("setting:realm_display_name")
+    local val = db:get(M.rk("setting:realm_display_name"))
     if should_close then
         db:close()
     end
@@ -1079,12 +1137,12 @@ function M.get_theme_settings(db)
         db = M.get_db()
         should_close = true
     end
-    local logo = db:get("setting:custom_logo")
+    local logo = db:get(M.rk("setting:custom_logo"))
     if not logo or logo == "" then
         logo = "/images/default.png"
     end
-    local bg_type = db:get("setting:bg_type") or "gradient"
-    local bg_value = db:get("setting:bg_value")
+    local bg_type = db:get(M.rk("setting:bg_type")) or "gradient"
+    local bg_value = db:get(M.rk("setting:bg_value"))
     if not bg_value or bg_value == "" then
         if bg_type == "image" then
             bg_value = ""
@@ -1293,6 +1351,440 @@ function M.read_local_version_file()
     local content = file:read("*a")
     file:close()
     return string.match(content, 'M%.version%s*=%s*"([^"]+)"')
+end
+
+-- ─── Security Headers ────────────────────────────────────────────────────────
+
+--- Apply hardened response headers. Call once per response before writing
+--- the body (renderers call it automatically; protocol endpoints must call
+--- it explicitly).
+function M.apply_security_headers()
+    response:setHeader("X-Content-Type-Options", "nosniff")
+    response:setHeader("X-Frame-Options", "DENY")
+    response:setHeader("Referrer-Policy", "no-referrer")
+    response:setHeader("X-XSS-Protection", "0")
+    response:setHeader("Cross-Origin-Opener-Policy", "same-origin")
+    response:setHeader("Content-Security-Policy",
+        "default-src 'self'; " ..
+        "script-src 'self' 'unsafe-inline'; " ..
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " ..
+        "font-src 'self' https://fonts.gstatic.com; " ..
+        "img-src 'self' data:; " ..
+        "connect-src 'self'; " ..
+        "frame-ancestors 'none'; " ..
+        "base-uri 'self'; " ..
+        "form-action 'self'")
+end
+
+-- ─── Multi-Realm Support ─────────────────────────────────────────────────────
+
+-- Realm resolution: derived from the request path (/auth/realms/<name>/...).
+-- The built-in realm "master" keeps UNPREFIXED database keys so existing
+-- deployments keep working without any migration. Every other realm gets its
+-- keys namespaced with "realm:<name>:".
+
+M.realm_cache = nil
+
+function M.get_realm()
+    if M.realm_cache then return M.realm_cache end
+    local name = "master"
+    if request and request.path then
+        name = string.match(request.path, "^/auth/realms/([^/]+)/") or name
+    end
+    -- Defensive: only sane realm names are accepted.
+    if not name:match("^[%w][%w%-_%.]") then name = "master" end
+    M.realm_cache = name
+    return name
+end
+
+--- URL prefix of the active realm's endpoints.
+function M.realm_url()
+    return "/auth/realms/" .. M.get_realm()
+end
+
+--- Key-namespacing helper: returns the DB key for `key` in the current realm.
+function M.rk(key)
+    local realm = M.get_realm()
+    if realm == "master" then return key end
+    return "realm:" .. realm .. ":" .. key
+end
+
+--- List of registered realms (always includes implicit "master").
+function M.get_realms(db)
+    local s = db:get("meta:realms_list")
+    local list = s and json.decode(s) or {}
+    local out = { "master" }
+    for _, r in ipairs(list) do
+        if r ~= "master" then table.insert(out, r) end
+    end
+    return out
+end
+
+local function realm_exists(db, name)
+    if name == "master" then return true end
+    for _, r in ipairs(M.get_realms(db)) do
+        if r == name then return true end
+    end
+    return false
+end
+
+--- Create a new realm: registers it and generates Telamon route stubs that
+--- relay into the shared master implementations (which self-parameterize by
+--- request path). Returns ok, err.
+function M.create_realm(db, name)
+    if type(name) ~= "string" or not name:match("^%w[%w%-_%.]*$") or #name > 48 then
+        return false, "Realm name may only contain letters, digits, '-', '_' and '.' (max 48 chars)"
+    end
+    if realm_exists(db, name) then return false, "Realm already exists" end
+
+    local list = {}
+    for _, r in ipairs(M.get_realms(db)) do
+        if r ~= "master" then table.insert(list, r) end
+    end
+    table.insert(list, name)
+    db:put("meta:realms_list", json.encode(list))
+
+    -- Bootstrap realm data under its namespace.
+    db:put(M.rk("meta:user_list"), json.encode({}))
+    db:put(M.rk("meta:roles_list"), json.encode({ "admin", "user", "editor", "viewer" }))
+    db:put(M.rk("role_def:admin"), json.encode({ name = "admin", description = "Administrator with full access" }))
+    db:put(M.rk("role_def:user"), json.encode({ name = "user", description = "Standard user with account access" }))
+    db:put(M.rk("setting:realm_display_name"), name)
+
+    -- Generate route stubs mirroring the master URL layout.
+    local endpoints = {
+        ["protocol/openid-connect/auth"] = 1,
+        ["protocol/openid-connect/token"] = 1,
+        ["protocol/openid-connect/token/introspect"] = 1,
+        ["protocol/openid-connect/userinfo"] = 1,
+        ["protocol/openid-connect/certs"] = 1,
+        ["protocol/openid-connect/consent"] = 1,
+        ["protocol/openid-connect/logout"] = 1,
+        ["protocol/openid-connect/revoke"] = 1,
+        ["protocol/openid-connect/device/authorize"] = 1,
+        [".well-known/openid-configuration"] = 1,
+        ["login-actions/authenticate"] = 1,
+        ["login-actions/registration"] = 1,
+        ["login-actions/totp"] = 1,
+        ["login-actions/webauthn"] = 1,
+    }
+    for rel, _ in pairs(endpoints) do
+        local path = "public/auth/realms/" .. name .. "/" .. rel .. ".lua"
+        local dir = string.match(path, "^(.*)/")
+        os.execute("mkdir -p '" .. dir .. "'")
+        local f = io.open(path, "w")
+        if f then
+            f:write('return dofile("public/lib/realm_router.lua").relay("' .. rel .. '")\n')
+            f:close()
+        end
+    end
+
+    local event = {
+        type = "REALM_CREATE",
+        username = "_system",
+        ip = M.get_client_ip(),
+        time = os.time(),
+        detail = "Created realm: " .. name
+    }
+    local events_str = db:get(M.rk("meta:events"))
+    local events = events_str and json.decode(events_str) or {}
+    table.insert(events, event)
+    db:put(M.rk("meta:events"), json.encode(events))
+    return true
+end
+
+--- Delete a non-master realm: purges all its namespaced data + stubs.
+function M.delete_realm(db, name)
+    if name == "master" then return false, "The master realm cannot be deleted" end
+    -- Defense-in-depth: the name reaches filesystem paths below.
+    if type(name) ~= "string" or not name:match("^%w[%w%-_%.]*$") or #name > 48 then
+        return false, "Invalid realm name"
+    end
+    if not realm_exists(db, name) then return false, "Unknown realm" end
+
+    local list = {}
+    for _, r in ipairs(M.get_realms(db)) do
+        if r ~= "master" and r ~= name then table.insert(list, r) end
+    end
+    db:put("meta:realms_list", json.encode(list))
+
+    -- Purge namespaced keys referenced through stored lists, then the
+    -- singletons. Unknown keys (e.g. stale codes/tokens) simply expire.
+    local sweeps = {
+        { M.rk("meta:user_list"),   M.rk("user:") },
+        { M.rk("meta:client_list"), M.rk("client:") },
+        { M.rk("meta:groups_list"), M.rk("group_def:") },
+        { M.rk("meta:roles_list"),  M.rk("role_def:") },
+    }
+    for _, sw in ipairs(sweeps) do
+        local s = db:get(M.rk(sw[1]))
+        if s then
+            for _, item in ipairs(json.decode(s) or {}) do
+                db:delete(M.rk(sw[2] .. item))
+            end
+        end
+        db:delete(M.rk(sw[1]))
+    end
+    db:delete(M.rk("meta:events"))
+
+    -- Remove route stubs.
+    os.execute("rm -rf 'public/auth/realms/" .. name .. "'")
+
+    return true
+end
+
+-- ─── TOTP / Two-Factor Helpers ───────────────────────────────────────────────
+
+local totp_mod = dofile("public/lib/totp.lua")
+
+M.totp_verify = function(base32_secret, code) return totp_mod.verify(base32_secret, code, 1, 30) end
+M.totp_generate_secret = function() return totp_mod.generate_secret(crypto.random_hex, 20) end
+M.totp_otpauth_uri = function(issuer, account, secret) return totp_mod.otpauth_uri(issuer, account, secret) end
+
+function M.get_user_totp(db, username)
+    local u = db:get(M.rk("user:" .. username))
+    if not u then return nil end
+    local ud = json.decode(u)
+    if ud and ud.totp and ud.totp.enabled and ud.totp.secret then
+        return ud.totp
+    end
+    return nil
+end
+
+--- Rebuild the authorization-endpoint URL from a stored login context so a
+--- completed MFA/passkey challenge can resume the original OIDC flow.
+function M.build_auth_resume_url(ctx)
+    ctx = ctx or {}
+    local url = M.realm_url() .. "/protocol/openid-connect/auth?client_id=" .. M.url_encode(ctx.client_id or "") ..
+        "&redirect_uri=" .. M.url_encode(ctx.redirect_uri or "") ..
+        "&state=" .. M.url_encode(ctx.state or "") ..
+        "&response_type=" .. M.url_encode(ctx.response_type or "code") ..
+        "&response_mode=" .. M.url_encode(ctx.response_mode or "query") ..
+        "&nonce=" .. M.url_encode(ctx.nonce or "") ..
+        "&scope=" .. M.url_encode(ctx.scope or "openid")
+    if ctx.code_challenge and ctx.code_challenge ~= "" then
+        url = url .. "&code_challenge=" .. M.url_encode(ctx.code_challenge) ..
+            "&code_challenge_method=" .. M.url_encode(ctx.code_challenge_method or "S256")
+    end
+    return url
+end
+
+--- Capture the full OIDC request context from query parameters.
+function M.capture_oidc_context()
+    return {
+        client_id = request:getParam("client_id"),
+        redirect_uri = request:getParam("redirect_uri"),
+        state = request:getParam("state"),
+        response_type = request:getParam("response_type") or "code",
+        response_mode = request:getParam("response_mode") or "query",
+        nonce = request:getParam("nonce"),
+        scope = request:getParam("scope") or "openid",
+        code_challenge = request:getParam("code_challenge"),
+        code_challenge_method = request:getParam("code_challenge_method") or "S256"
+    }
+end
+
+--- Store a short-lived pending-MFA grant after a successful password check.
+function M.create_pending_mfa(db, username, context)
+    local token = crypto.random_hex(24)
+    db:put("mfa_pending:" .. token, json.encode({
+        username = username,
+        context = context or {},
+        created = os.time(),
+        exp = os.time() + 180
+    }))
+    return token
+end
+
+--- Peek at a pending-MFA grant without consuming it.
+function M.get_pending_mfa(db, token)
+    local s = token and db:get("mfa_pending:" .. token) or nil
+    if not s then return nil end
+    local d = json.decode(s)
+    if not d or os.time() > (d.exp or 0) then return nil end
+    return d
+end
+
+--- Patch a pending-MFA grant in place (e.g. attach an enrollment secret).
+function M.update_pending_mfa(db, token, patch)
+    local d = M.get_pending_mfa(db, token)
+    if not d then return false end
+    for k, v in pairs(patch) do d[k] = v end
+    db:put("mfa_pending:" .. token, json.encode(d))
+    return true
+end
+
+function M.consume_pending_mfa(db, token)
+    local s = token and db:get("mfa_pending:" .. token) or nil
+    if not s then return nil, "invalid_or_expired" end
+    db:delete("mfa_pending:" .. token)
+    local d = json.decode(s)
+    if not d or os.time() > (d.exp or 0) then return nil, "expired" end
+    return d
+end
+
+--- Create a fully authenticated session for `username` (shared by password,
+--- TOTP challenge, passkey, and device-flow logins). Returns the session id.
+function M.create_session(db, username)
+    local session_id = M.uuid()
+    local session_data = {
+        username = username,
+        realm = M.get_realm(),
+        ip = M.get_client_ip(),
+        started = os.time(),
+        last_access = os.time()
+    }
+    db:put("session:" .. session_id, username)
+    db:put("session_data:" .. session_id, json.encode(session_data))
+
+    local sessions_str = db:get("meta:session_list")
+    local sessions = sessions_str and json.decode(sessions_str) or {}
+    table.insert(sessions, session_id)
+    db:put("meta:session_list", json.encode(sessions))
+
+    local event = {
+        type = "LOGIN",
+        username = username,
+        ip = M.get_client_ip(),
+        time = os.time(),
+        detail = "Login successful"
+    }
+    local events_str = db:get(M.rk("meta:events"))
+    local events = events_str and json.decode(events_str) or {}
+    table.insert(events, event)
+    if #events > 100 then
+        local trimmed = {}
+        for i = #events - 99, #events do table.insert(trimmed, events[i]) end
+        events = trimmed
+    end
+    db:put(M.rk("meta:events"), json.encode(events))
+    return session_id
+end
+
+-- ─── WebAuthn / Passkey Helpers ──────────────────────────────────────────────
+
+local cbor_mod = dofile("public/lib/cbor.lua")
+
+--- Parse WebAuthn authenticatorData binary:
+--- rpIdHash(32) flags(1) signCount(4) [attestedCredentialData] ...
+function M.parse_authenticator_data(auth_data)
+    if type(auth_data) ~= "string" or #auth_data < 37 then return nil, "authenticatorData too short" end
+    local rp_id_hash = auth_data:sub(1, 32)
+    local flags = auth_data:byte(33)
+    local sign_count = 0
+    for i = 34, 37 do sign_count = sign_count * 256 + auth_data:byte(i) end
+    local parsed = {
+        rp_id_hash = rp_id_hash,
+        flags = flags,
+        up = (flags % 2) == 1,                       -- bit 0: user present
+        uv = math.floor(flags / 4) % 2 == 1,         -- bit 2: user verified
+        at = math.floor(flags / 64) % 2 == 1,        -- bit 6: attested credential data present
+        sign_count = sign_count
+    }
+    if parsed.at then
+        if #auth_data < 55 then return nil, "truncated attested credential data" end
+        local aaguid = auth_data:sub(38, 53)
+        local cred_len = auth_data:byte(54) * 256 + auth_data:byte(55)
+        if #auth_data < 55 + cred_len then return nil, "truncated credential id" end
+        local cred_id = auth_data:sub(56, 55 + cred_len)
+        local cose_key, next_pos = cbor_mod.decode_at(auth_data, 56 + cred_len)
+        if not cose_key then return nil, "bad COSE key: " .. tostring(next_pos) end
+        parsed.aaguid_hex = aaguid:gsub(".", function(c) return string.format("%02x", c:byte()) end)
+        parsed.cred_id_b64u = M.base64url_encode(cred_id)
+        parsed.cose_key = cose_key
+        parsed.next_pos = next_pos
+    end
+    return parsed
+end
+
+--- Extract EC P-256 coordinates (x, y as base64url) from a decoded COSE key.
+function M.cose_key_to_xy(cose)
+    if type(cose) ~= "table" then return nil end
+    -- kty=2 (EC2), alg=-7 (ES256), crv=1 (P-256), x=-2, y=-3
+    if cose[1] ~= 2 or cose[-1] ~= 1 then return nil end
+    local x, y = cose[-2], cose[-3]
+    if type(x) ~= "string" or type(y) ~= "string" then return nil end
+    return M.base64url_encode(x), M.base64url_encode(y)
+end
+
+--- Store a challenge for later verification.
+function M.wa_store_challenge(db, challenge, username, context)
+    db:put("wa_challenge:" .. challenge, json.encode({
+        username = username,
+        context = context or {},
+        created = os.time(),
+        exp = os.time() + 300
+    }))
+end
+
+--- Split a DER-encoded ECDSA signature (SEQUENCE{r INTEGER, s INTEGER}) into
+--- unpadded-base64url r and s components for the Go bridge.
+function M.parse_der_signature(der)
+    local data = M.base64url_decode(der or "")
+    if data:byte(1) ~= 0x30 then return nil, nil end
+    local pos = 3 -- skip 0x30 + total length (assumes < 128 bytes)
+    if data:byte(pos) ~= 0x02 then return nil, nil end
+    local rlen = data:byte(pos + 1)
+    local r = data:sub(pos + 2, pos + 1 + rlen)
+    pos = pos + 2 + rlen
+    if data:byte(pos) ~= 0x02 then return nil, nil end
+    local slen = data:byte(pos + 1)
+    local s = data:sub(pos + 2, pos + 1 + slen)
+    -- Strip a possible leading zero byte used to mark positive integers.
+    if #r > 32 then r = r:sub(-32) end
+    if #s > 32 then s = s:sub(-32) end
+    while #r < 32 do r = "\0" .. r end
+    while #s < 32 do s = "\0" .. s end
+    return M.base64url_encode(r), M.base64url_encode(s)
+end
+
+--- Consume a stored challenge (single use).
+function M.wa_consume_challenge(db, challenge)
+    if not challenge or challenge == "" then return nil end
+    local s = db:get("wa_challenge:" .. challenge)
+    if not s then return nil end
+    db:delete("wa_challenge:" .. challenge)
+    local d = json.decode(s)
+    if not d or os.time() > (d.exp or 0) then return nil end
+    return d
+end
+
+--- Look up a stored passkey credential by raw id (base64url).
+function M.wa_get_credential(db, cred_id_b64u)
+    local s = db:get("wa_cred:" .. cred_id_b64u)
+    return s and json.decode(s) or nil
+end
+
+-- ─── Device Flow (RFC 8628) Helpers ──────────────────────────────────────────
+
+local USER_CODE_CHARS = "BCDFGHJKLMNPQRSTVWXZ2456789" -- unambiguous set
+
+function M.device_generate_codes()
+    local hex = crypto.random_hex(32)
+    local device_code = hex
+    local uc = ""
+    local seed_hex = crypto.random_hex(8)
+    for i = 1, 8 do
+        local v = tonumber(seed_hex:sub(i, i), 16) % #USER_CODE_CHARS + 1
+        uc = uc .. USER_CODE_CHARS:sub(v, v)
+        if i == 4 then uc = uc .. "-" end
+    end
+    return device_code, uc
+end
+
+function M.device_create_grant(db, client_id, scope)
+    local device_code, user_code = M.device_generate_codes()
+    db:put("dev:" .. device_code, json.encode({
+        user_code = user_code,
+        client_id = client_id,
+        scope = scope or "",
+        status = "pending",
+        created = os.time(),
+        exp = os.time() + 600,
+        last_poll = 0
+    }))
+    db:put("dev_uc:" .. user_code, device_code)
+    return device_code, user_code
 end
 
 
@@ -1801,6 +2293,7 @@ M.css = [[
 -- ─── Layout Renderers ─────────────────────────────────────────────────────────
 
 function M.render_auth_page(title, subtitle, content, db)
+    M.apply_security_headers()
     local theme = M.get_theme_settings(db)
     local realm_name = M.get_realm_display_name(db)
     local tab_title = realm_name .. " - AtlasCloak"
@@ -1855,6 +2348,7 @@ function M.render_auth_page(title, subtitle, content, db)
 end
 
 function M.render_admin_page(title, active_nav, admin_user, content, db)
+    M.apply_security_headers()
     local theme = M.get_theme_settings(db)
     local realm_name = M.get_realm_display_name(db)
     local tab_title = title .. " - " .. realm_name .. " - AtlasCloak Admin"
@@ -1945,6 +2439,7 @@ function M.render_admin_page(title, active_nav, admin_user, content, db)
 end
 
 function M.render_account_page(title, active_nav, user_data, content, db)
+    M.apply_security_headers()
     local realm_name = M.get_realm_display_name(db)
     local tab_title = title .. " - " .. realm_name .. " - AtlasCloak Account"
 
@@ -1994,6 +2489,8 @@ function M.render_account_page(title, active_nav, user_data, content, db)
                     <div class="nav-section-title">Account</div>
                     <a href="/account" class="]] .. nav_class("profile") .. [["><span class="nav-icon"><i class="fa-solid fa-user"></i></span> Personal Info</a>
                     <a href="/account/password" class="]] .. nav_class("password") .. [["><span class="nav-icon"><i class="fa-solid fa-key"></i></span> Password</a>
+                    <a href="/account/twofactor" class="]] .. nav_class("twofactor") .. [["><span class="nav-icon"><i class="fa-solid fa-mobile-screen"></i></span> Two-Factor (TOTP)</a>
+                    <a href="/account/passkeys" class="]] .. nav_class("passkeys") .. [["><span class="nav-icon"><i class="fa-solid fa-fingerprint"></i></span> Passkeys</a>
                     <a href="/account/sessions" class="]] .. nav_class("sessions") .. [["><span class="nav-icon"><i class="fa-solid fa-desktop"></i></span> Device Sessions</a>
                 </div>
                 <div class="nav-section">

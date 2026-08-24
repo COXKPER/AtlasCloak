@@ -10,7 +10,7 @@ if not username then
     return
 end
 
-local user_data_str = db:get("user:" .. username)
+local user_data_str = db:get(utils.rk("user:") .. username)
 local user_data = user_data_str and json.decode(user_data_str) or { username = username }
 local policy = utils.get_password_policy(db)
 
@@ -39,7 +39,7 @@ if request.method == "POST" then
         else
             user_data.password = utils.hash_password(new_pw)
             user_data.must_change_password = false
-            db:put("user:" .. username, json.encode(user_data))
+            db:put(utils.rk("user:") .. username, json.encode(user_data))
             
             local event = {
                 type = "UPDATE_PASSWORD",
@@ -48,7 +48,7 @@ if request.method == "POST" then
                 time = os.time(),
                 detail = "User updated password"
             }
-            local events_str = db:get("meta:events")
+            local events_str = db:get(utils.rk("meta:events"))
             local events = events_str and json.decode(events_str) or {}
             table.insert(events, event)
             if #events > 100 then
@@ -56,7 +56,7 @@ if request.method == "POST" then
                 for i = #events - 99, #events do table.insert(new, events[i]) end
                 events = new
             end
-            db:put("meta:events", json.encode(events))
+            db:put(utils.rk("meta:events"), json.encode(events))
             
             msg_html = '<div class="alert alert-success"><span class="alert-icon"><i class="fa-solid fa-circle-check"></i></span> Password updated successfully! Your account is now secured.</div>'
         end

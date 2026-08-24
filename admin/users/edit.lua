@@ -11,7 +11,7 @@ if not admin_user or not utils.is_admin(db, admin_user) then
 end
 
 local target_username = request:getParam("username") or ""
-local user_data_str = db:get("user:" .. target_username)
+local user_data_str = db:get(utils.rk("user:") .. target_username)
 
 if not user_data_str then
     db:close()
@@ -33,10 +33,10 @@ if action_param == "unlock" then
         time = os.time(),
         detail = "Admin unlocked account: " .. target_username
     }
-    local events_str = db:get("meta:events")
+    local events_str = db:get(utils.rk("meta:events"))
     local events = events_str and json.decode(events_str) or {}
     table.insert(events, event)
-    db:put("meta:events", json.encode(events))
+    db:put(utils.rk("meta:events"), json.encode(events))
     
     db:close()
     response:redirect("/admin/users/edit?username=" .. utils.url_encode(target_username), 302)
@@ -77,7 +77,7 @@ if request.method == "POST" then
             utils.set_user_groups(db, target_username, selected_groups)
         end
         
-        db:put("user:" .. target_username, json.encode(user_data))
+        db:put(utils.rk("user:") .. target_username, json.encode(user_data))
         
         local event = {
             type = "USER_UPDATE",
@@ -86,10 +86,10 @@ if request.method == "POST" then
             time = os.time(),
             detail = "Admin updated user details & memberships: " .. target_username
         }
-        local events_str = db:get("meta:events")
+        local events_str = db:get(utils.rk("meta:events"))
         local events = events_str and json.decode(events_str) or {}
         table.insert(events, event)
-        db:put("meta:events", json.encode(events))
+        db:put(utils.rk("meta:events"), json.encode(events))
         
         msg_html = '<div class="alert alert-success"><span class="alert-icon"><i class="fa-solid fa-check"></i></span> User details, roles, and groups updated.</div>'
         
@@ -100,7 +100,7 @@ if request.method == "POST" then
             msg_html = '<div class="alert alert-error"><span class="alert-icon"><i class="fa-solid fa-triangle-exclamation"></i></span> ' .. utils.html_escape(pw_err) .. '</div>'
         else
             user_data.password = utils.hash_password(new_pw)
-            db:put("user:" .. target_username, json.encode(user_data))
+            db:put(utils.rk("user:") .. target_username, json.encode(user_data))
             
             local event = {
                 type = "PASSWORD_RESET",
@@ -109,13 +109,37 @@ if request.method == "POST" then
                 time = os.time(),
                 detail = "Admin reset password for user: " .. target_username
             }
-            local events_str = db:get("meta:events")
+            local events_str = db:get(utils.rk("meta:events"))
             local events = events_str and json.decode(events_str) or {}
             table.insert(events, event)
-            db:put("meta:events", json.encode(events))
+            db:put(utils.rk("meta:events"), json.encode(events))
             
             msg_html = '<div class="alert alert-success"><span class="alert-icon"><i class="fa-solid fa-check"></i></span> Password has been reset for ' .. utils.html_escape(target_username) .. '.</div>'
         end
+
+    elseif action == "reset_mfa" then
+        local removed = 0
+        if user_data.totp then user_data.totp = nil; removed = removed + 1 end
+        for _, pk in ipairs(user_data.passkeys or {}) do
+            db:delete(utils.rk("wa_cred:" .. (pk.cred_id or "")))
+            removed = removed + 1
+        end
+        user_data.passkeys = nil
+        db:put(utils.rk("user:") .. target_username, json.encode(user_data))
+
+        local event = {
+            type = "MFA_RESET",
+            username = admin_user,
+            ip = utils.get_client_ip(),
+            time = os.time(),
+            detail = "Admin reset MFA methods for user: " .. target_username
+        }
+        local events_str = db:get(utils.rk("meta:events"))
+        local events = events_str and json.decode(events_str) or {}
+        table.insert(events, event)
+        db:put(utils.rk("meta:events"), json.encode(events))
+
+        msg_html = '<div class="alert alert-success"><span class="alert-icon"><i class="fa-solid fa-check"></i></span> All MFA methods (' .. removed .. ') have been reset for ' .. utils.html_escape(target_username) .. '.</div>'
     end
 end
 
@@ -139,7 +163,7 @@ end
 
 -- Render Role Checkboxes
 local all_roles = utils.get_roles(db)
-local direct_roles = db:get("user_roles:" .. target_username) and json.decode(db:get("user_roles:" .. target_username)) or { "user" }
+local direct_roles = db:get(utils.rk("user_roles:") .. target_username) and json.decode(db:get(utils.rk("user_roles:") .. target_username)) or { "user" }
 local direct_role_set = {}
 for _, r in ipairs(direct_roles) do direct_role_set[r] = true end
 
@@ -245,6 +269,22 @@ local content = msg_html .. lock_status_html .. [[
                         <input type="password" name="newPassword" placeholder="Enter new password" required>
                     </div>
                     <button type="submit" class="btn btn-warning" style="width:100%;"><i class="fa-solid fa-key"></i> Reset Password</button>
+                </form>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                <h3>Multi-Factor Methods</h3>
+            </div>
+            <div class="card-body">
+                <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">
+                    TOTP: ]] .. ((user_data.totp and user_data.totp.enabled) and '<span class="badge badge-success">Enrolled</span>' or '<span class="badge">None</span>') .. [[
+                     · Passkeys: <span class="badge badge-info">]] .. tostring(#(user_data.passkeys or {})) .. [[</span>
+                </div>
+                <form method="POST" action="/admin/users/edit?username=]] .. utils.url_encode(target_username) .. [[" onsubmit="return confirm('Reset ALL MFA methods for this user?');">
+                    <input type="hidden" name="action" value="reset_mfa">
+                    <button type="submit" class="btn btn-danger" style="width:100%;"><i class="fa-solid fa-shield-virus"></i> Reset All MFA Methods</button>
                 </form>
             </div>
         </div>

@@ -53,8 +53,6 @@ POST /auth/realms/master/protocol/openid-connect/token    →  token endpoint
 
 ### Core
 
-- **Self-update system** — check for new releases and download & apply updates directly from GitHub (`Updates & Legal` tab in Realm Settings). Every update is protected by one-time CSRF tokens, archives the current installation to `backups/` before applying, and never touches your database or `config.toml`
-- **Reverse-proxy aware client IPs** — real client IP is resolved from `CF-Connecting-IP`, `True-Client-IP`, `X-Real-IP`, `X-Forwarded-For`, and RFC 7239 `Forwarded` headers (Caddy, Nginx, Traefik, HAProxy, Cloudflare), with strict IP validation to prevent audit-log spoofing; falls back to the socket address on direct deployments
 - **Zero-dependency storage** — embedded LevelDB key-value store through Telamon's `ldb` bridge; no external database required
 - **Lazy initialization** — bootstrap admin and default realm data are created on first request
 - **Forced password rotation** — the bootstrap admin must change its password at first login

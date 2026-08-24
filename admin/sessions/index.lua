@@ -34,10 +34,10 @@ if revoke_id and revoke_id ~= "" then
         time = os.time(),
         detail = "Revoked session: " .. string.sub(revoke_id, 1, 8) .. "... (" .. (sess_user or "unknown") .. ")"
     }
-    local events_str = db:get("meta:events")
+    local events_str = db:get(utils.rk("meta:events"))
     local events = events_str and json.decode(events_str) or {}
     table.insert(events, event)
-    db:put("meta:events", json.encode(events))
+    db:put(utils.rk("meta:events"), json.encode(events))
     
     db:close()
     response:redirect("/admin/sessions", 302)
@@ -67,10 +67,10 @@ if revoke_others == "true" and current_session_id then
         time = os.time(),
         detail = "Revoked all other active sessions"
     }
-    local events_str = db:get("meta:events")
+    local events_str = db:get(utils.rk("meta:events"))
     local events = events_str and json.decode(events_str) or {}
     table.insert(events, event)
-    db:put("meta:events", json.encode(events))
+    db:put(utils.rk("meta:events"), json.encode(events))
     
     db:close()
     response:redirect("/admin/sessions", 302)

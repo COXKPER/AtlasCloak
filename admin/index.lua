@@ -11,7 +11,7 @@ if not username or not utils.is_admin(db, username) then
 end
 
 -- Stats
-local users_str = db:get("meta:user_list")
+local users_str = db:get(utils.rk("meta:user_list"))
 local users = users_str and json.decode(users_str) or {}
 local user_count = #users
 
@@ -19,14 +19,14 @@ local sessions_str = db:get("meta:session_list")
 local sessions = sessions_str and json.decode(sessions_str) or {}
 local session_count = #sessions
 
-local clients_str = db:get("meta:client_list")
+local clients_str = db:get(utils.rk("meta:client_list"))
 local clients = clients_str and json.decode(clients_str) or { "account", "admin-console" }
 local client_count = #clients
 
 local groups = utils.get_groups(db)
 local group_count = #groups
 
-local events_str = db:get("meta:events")
+local events_str = db:get(utils.rk("meta:events"))
 local events = events_str and json.decode(events_str) or {}
 local event_count = #events
 

@@ -27,7 +27,7 @@ if request.method == "POST" then
         msg_html = '<div class="alert alert-error"><span class="alert-icon">✕</span> Username and password are required.</div>'
     elseif not pw_ok then
         msg_html = '<div class="alert alert-error"><span class="alert-icon">✕</span> ' .. utils.html_escape(pw_err) .. '</div>'
-    elseif db:get("user:" .. username) then
+    elseif db:get(utils.rk("user:") .. username) then
         msg_html = '<div class="alert alert-error"><span class="alert-icon">✕</span> Username already exists.</div>'
     else
         local user_data = {
@@ -39,7 +39,7 @@ if request.method == "POST" then
             enabled = enabled,
             createdAt = os.time()
         }
-        db:put("user:" .. username, json.encode(user_data))
+        db:put(utils.rk("user:") .. username, json.encode(user_data))
         
         -- Multi-role parsing
         local all_roles = utils.get_roles(db)
@@ -52,10 +52,10 @@ if request.method == "POST" then
         if #selected_roles == 0 then table.insert(selected_roles, "user") end
         utils.set_user_roles(db, username, selected_roles)
         
-        local user_list_str = db:get("meta:user_list")
+        local user_list_str = db:get(utils.rk("meta:user_list"))
         local user_list = user_list_str and json.decode(user_list_str) or {}
         table.insert(user_list, username)
-        db:put("meta:user_list", json.encode(user_list))
+        db:put(utils.rk("meta:user_list"), json.encode(user_list))
         
         local event = {
             type = "USER_CREATE",
@@ -64,10 +64,10 @@ if request.method == "POST" then
             time = os.time(),
             detail = "Admin created new user: " .. username .. " (Roles: " .. table.concat(selected_roles, ", ") .. ")"
         }
-        local events_str = db:get("meta:events")
+        local events_str = db:get(utils.rk("meta:events"))
         local events = events_str and json.decode(events_str) or {}
         table.insert(events, event)
-        db:put("meta:events", json.encode(events))
+        db:put(utils.rk("meta:events"), json.encode(events))
         
         db:close()
         response:redirect("/admin/users", 302)

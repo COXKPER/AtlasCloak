@@ -21,8 +21,8 @@ if request.method == "POST" then
         local enabled = (form.whitelist_enabled == "on" or form.whitelist_enabled == "true")
         local global_wl = form.global_whitelist or ""
         
-        db:put("setting:whitelist_enabled", enabled and "true" or "false")
-        db:put("setting:global_whitelist", global_wl)
+        db:put(utils.rk("setting:whitelist_enabled"), enabled and "true" or "false")
+        db:put(utils.rk("setting:global_whitelist"), global_wl)
         
         local event = {
             type = "WHITELIST_UPDATE",
@@ -31,7 +31,7 @@ if request.method == "POST" then
             time = os.time(),
             detail = "Updated URI Whitelist configuration (Enabled: " .. tostring(enabled) .. ")"
         }
-        local events_str = db:get("meta:events")
+        local events_str = db:get(utils.rk("meta:events"))
         local events = events_str and json.decode(events_str) or {}
         table.insert(events, event)
         if #events > 100 then
@@ -39,7 +39,7 @@ if request.method == "POST" then
             for i = #events - 99, #events do table.insert(new, events[i]) end
             events = new
         end
-        db:put("meta:events", json.encode(events))
+        db:put(utils.rk("meta:events"), json.encode(events))
         
         msg_html = '<div class="alert alert-success"><span class="alert-icon"><i class="fa-solid fa-circle-check"></i></span> URI Whitelist configuration saved successfully!</div>'
         
@@ -77,12 +77,12 @@ local is_enabled = utils.is_whitelist_enabled(db)
 local global_whitelist = utils.get_global_whitelist(db)
 
 -- Fetch registered clients
-local clients_str = db:get("meta:client_list")
+local clients_str = db:get(utils.rk("meta:client_list"))
 local client_list = clients_str and json.decode(clients_str) or { "account", "admin-console" }
 
 local client_rows = ""
 for _, cid in ipairs(client_list) do
-    local cdata_str = db:get("client:" .. cid)
+    local cdata_str = db:get(utils.rk("client:") .. cid)
     local cdata = cdata_str and json.decode(cdata_str) or { client_id = cid, name = cid, redirect_uris = "/*" }
     local uris = cdata.redirect_uris or "/*"
     

@@ -10,7 +10,7 @@ if not username then
     return
 end
 
-local user_data_str = db:get("user:" .. username)
+local user_data_str = db:get(utils.rk("user:") .. username)
 local user_data = user_data_str and json.decode(user_data_str) or { username = username }
 
 local msg_html = ""
@@ -18,7 +18,7 @@ local msg_html = ""
 -- Handle Revoke App Consent
 local revoke_client = request:getParam("revoke_consent")
 if revoke_client and revoke_client ~= "" then
-    db:delete("consent:" .. username .. ":" .. revoke_client)
+    db:delete(utils.rk("consent:") .. username .. ":" .. revoke_client)
     local event = {
         type = "CONSENT_REVOKE",
         username = username,
@@ -26,10 +26,10 @@ if revoke_client and revoke_client ~= "" then
         time = os.time(),
         detail = "User revoked consent for application: " .. revoke_client
     }
-    local events_str = db:get("meta:events")
+    local events_str = db:get(utils.rk("meta:events"))
     local events = events_str and json.decode(events_str) or {}
     table.insert(events, event)
-    db:put("meta:events", json.encode(events))
+    db:put(utils.rk("meta:events"), json.encode(events))
     
     msg_html = '<div class="alert alert-success"><span class="alert-icon"><i class="fa-solid fa-circle-check"></i></span> Revoked access for application <strong>' .. utils.html_escape(revoke_client) .. '</strong>. Next authorization request will prompt for consent.</div>'
 end
@@ -40,7 +40,7 @@ if request.method == "POST" then
     user_data.lastName = form.lastName or ""
     user_data.email = form.email or ""
     
-    db:put("user:" .. username, json.encode(user_data))
+    db:put(utils.rk("user:") .. username, json.encode(user_data))
     
     local event = {
         type = "UPDATE_PROFILE",
@@ -49,7 +49,7 @@ if request.method == "POST" then
         time = os.time(),
         detail = "User updated profile information"
     }
-    local events_str = db:get("meta:events")
+    local events_str = db:get(utils.rk("meta:events"))
     local events = events_str and json.decode(events_str) or {}
     table.insert(events, event)
     if #events > 100 then
@@ -57,13 +57,13 @@ if request.method == "POST" then
         for i = #events - 99, #events do table.insert(new, events[i]) end
         events = new
     end
-    db:put("meta:events", json.encode(events))
+    db:put(utils.rk("meta:events"), json.encode(events))
     
     msg_html = '<div class="alert alert-success"><span class="alert-icon"><i class="fa-solid fa-circle-check"></i></span> Your personal information has been updated.</div>'
 end
 
 -- Find all clients this user has consented to
-local clients_str = db:get("meta:client_list")
+local clients_str = db:get(utils.rk("meta:client_list"))
 local client_list = clients_str and json.decode(clients_str) or { "account", "admin-console", "test", "m2m-service" }
 
 local app_rows = ""
@@ -71,7 +71,7 @@ local app_count = 0
 for _, cid in ipairs(client_list) do
     if cid ~= "account" and cid ~= "admin-console" and utils.has_user_consented(db, username, cid) then
         app_count = app_count + 1
-        local cdata_str = db:get("client:" .. cid)
+        local cdata_str = db:get(utils.rk("client:") .. cid)
         local cdata = cdata_str and json.decode(cdata_str) or { name = cid }
         local cname = cdata.name or cid
         

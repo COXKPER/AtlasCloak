@@ -1,4 +1,6 @@
 local utils = dofile("public/lib/utils.lua")
+utils.apply_security_headers()
+local RB = "/auth/realms/" .. utils.get_realm()
 
 local client_id = request:getParam("client_id")
 local redirect_uri = request:getParam("redirect_uri")
@@ -19,6 +21,21 @@ if not code_challenge_method or code_challenge_method == "" then code_challenge_
 
 local db = utils.get_db()
 utils.ensure_admin_exists(db)
+local policies = utils.get_policies(db)
+
+-- Realm policy: PKCE mandatory for authorization-code flows.
+-- First-party consoles are exempt (same-origin, cookie-based flows).
+if policies.pkce_required
+   and string.find(response_type, "code")
+   and client_id ~= "account"
+   and client_id ~= "admin-console"
+   and (not code_challenge or code_challenge == "") then
+    db:close()
+    response:setStatus(400)
+    local content = '<div class="alert alert-error"><span class="alert-icon"><i class="fa-solid fa-triangle-exclamation"></i></span> <strong>PKCE Required:</strong> this realm requires the code_challenge parameter (RFC 7636) for authorization requests.</div>'
+    response:write(utils.render_auth_page("Invalid Request", "PKCE Required", content))
+    return
+end
 
 -- K5: Validate redirect_uri strictly against registered client / whitelist
 if redirect_uri and redirect_uri ~= "" then
@@ -47,7 +64,7 @@ if not user then
         end
     end
 
-    local action_url = "/auth/realms/master/login-actions/authenticate?client_id=" .. utils.url_encode(client_id or "") .. 
+    local action_url = "" .. RB .. "/login-actions/authenticate?client_id=" .. utils.url_encode(client_id or "") .. 
                        "&redirect_uri=" .. utils.url_encode(redirect_uri or "") .. 
                        "&state=" .. utils.url_encode(state or "") .. 
                        "&response_type=" .. utils.url_encode(response_type) .. 
@@ -65,7 +82,19 @@ if not user then
     if reg_enabled then
         reg_link = [[
         <div class="footer-links">
-            New user? <a href="/auth/realms/master/login-actions/registration?client_id=]] .. utils.url_encode(client_id or "") .. [[&redirect_uri=]] .. utils.url_encode(redirect_uri or "") .. [[&state=]] .. utils.url_encode(state or "") .. [[">Register</a>
+            New user? <a href="" .. RB .. "/login-actions/registration?client_id=]] .. utils.url_encode(client_id or "") .. [[&redirect_uri=]] .. utils.url_encode(redirect_uri or "") .. [[&state=]] .. utils.url_encode(state or "") .. [[">Register</a>
+        </div>
+        ]]
+    end
+
+    local passkey_link = ""
+    if policies.passkeys_enabled then
+        passkey_link = [[
+        <div class="footer-links">
+            <a href="]] .. RB .. [[/login-actions/webauthn?client_id=]] .. utils.url_encode(client_id or "") ..
+            [[&redirect_uri=]] .. utils.url_encode(redirect_uri or "") .. [[&state=]] .. utils.url_encode(state or "") ..
+            [[&response_type=]] .. response_type .. [[&scope=]] .. utils.url_encode(scope) .. [[">
+            <i class="fa-solid fa-fingerprint"></i> Sign in with a Passkey</a>
         </div>
         ]]
     end
@@ -83,7 +112,7 @@ if not user then
             </div>
             <button type="submit" class="btn btn-primary"><i class="fa-solid fa-arrow-right-to-bracket"></i> Sign In</button>
         </form>
-        ]] .. reg_link
+        ]] .. passkey_link .. reg_link
 
     response:write(utils.render_auth_page("Sign In", "Sign in to your account", content))
     return
@@ -96,56 +125,99 @@ if client_id and client_id ~= "" and client_id ~= "account" and client_id ~= "ad
     local need_consent = false
     if prompt == "consent" then
         need_consent = true
-    elseif utils.is_consent_required(db, client_id) and not utils.has_user_consented(db, user, client_id) then
-        need_consent = true
+    else
+        -- Client-level config wins; realm policy `consent_default` is the fallback.
+        local cdata_str0 = db:get(utils.rk("client:") .. client_id)
+        local cd0 = cdata_str0 and json.decode(cdata_str0) or {}
+        local required = cd0.consent_required
+        if required == nil then required = policies.consent_default end
+        local consent_on = (required == true or required == "true" or required == "on")
+        if consent_on and not utils.has_user_consented(db, user, client_id, scope) then
+            need_consent = true
+        end
     end
-    
+
     if need_consent then
-        local cdata_str = db:get("client:" .. client_id)
+        local cdata_str = db:get(utils.rk("client:") .. client_id)
         local cdata = cdata_str and json.decode(cdata_str) or { name = client_id }
         local client_name = cdata.name or client_id
-        
+        local client_type = cdata.client_type or "public"
+
+        local SCOPE_INFO = {
+            openid         = { icon = "fa-id-card",      label = "Verify your identity",          detail = "Confirm who you are and receive a signed ID token" },
+            profile        = { icon = "fa-user",         label = "Read your basic profile",       detail = "Username, full name, and avatar" },
+            email          = { icon = "fa-envelope",     label = "Read your email address",       detail = "See whether your email is verified" },
+            address        = { icon = "fa-location-dot", label = "Read your postal address",      detail = "Street, city, and country fields" },
+            phone          = { icon = "fa-phone",        label = "Read your phone number",        detail = "Mobile or landline stored on your account" },
+            offline_access = { icon = "fa-rotate",       label = "Stay connected",                detail = "Refresh tokens so access continues while you are away" },
+        }
+
+        local scope_rows = ""
+        for sc in string.gmatch(scope, "%S+") do
+            local info = SCOPE_INFO[sc] or { icon = "fa-tag", label = sc, detail = "Custom application scope" }
+            scope_rows = scope_rows .. [[
+                <li style="display:flex;align-items:flex-start;gap:10px;">
+                    <i class="fa-solid ]] .. info.icon .. [[" style="width:18px;margin-top:3px;color:var(--accent);"></i>
+                    <div>
+                        <div style="font-weight:600;">]] .. utils.html_escape(info.label) .. [[</div>
+                        <div style="font-size:11px;color:var(--text-muted);">]] .. utils.html_escape(info.detail) .. [[</div>
+                    </div>
+                </li>
+            ]]
+        end
+        if string.find(scope, "openid") then
+            scope_rows = scope_rows .. [[
+                <li style="display:flex;align-items:flex-start;gap:10px;">
+                    <i class="fa-solid fa-user-shield" style="width:18px;margin-top:3px;color:var(--warning);"></i>
+                    <div>
+                        <div style="font-weight:600;">Know your realm roles</div>
+                        <div style="font-size:11px;color:var(--text-muted);">Included in tokens for access control decisions</div>
+                    </div>
+                </li>
+            ]]
+        end
+
         local sec_token = utils.generate_security_token(db, "consent")
         db:close()
-        
-        local consent_url = "/auth/realms/master/protocol/openid-connect/consent?client_id=" .. utils.url_encode(client_id) .. 
-                            "&redirect_uri=" .. utils.url_encode(redirect_uri or "") .. 
-                            "&state=" .. utils.url_encode(state or "") .. 
-                            "&response_type=" .. utils.url_encode(response_type) .. 
-                            "&response_mode=" .. utils.url_encode(response_mode) .. 
-                            "&nonce=" .. utils.url_encode(nonce or "") .. 
-                            "&scope=" .. utils.url_encode(scope) .. 
-                            "&code_challenge=" .. utils.url_encode(code_challenge or "") .. 
+
+        local consent_url = "" .. RB .. "/protocol/openid-connect/consent?client_id=" .. utils.url_encode(client_id) ..
+                            "&redirect_uri=" .. utils.url_encode(redirect_uri or "") ..
+                            "&state=" .. utils.url_encode(state or "") ..
+                            "&response_type=" .. utils.url_encode(response_type) ..
+                            "&response_mode=" .. utils.url_encode(response_mode) ..
+                            "&nonce=" .. utils.url_encode(nonce or "") ..
+                            "&scope=" .. utils.url_encode(scope) ..
+                            "&code_challenge=" .. utils.url_encode(code_challenge or "") ..
                             "&code_challenge_method=" .. utils.url_encode(code_challenge_method or "")
-        
+
         local content = [[
             <div style="text-align:center;margin-bottom:20px;">
-                <div style="font-size:14px;color:var(--text);margin-bottom:8px;">
-                    <strong>]] .. utils.html_escape(client_name) .. [[</strong> is requesting access to your account.
+                <div style="width:48px;height:48px;border-radius:12px;background:linear-gradient(135deg,var(--primary),var(--accent));margin:0 auto 10px;display:flex;align-items:center;justify-content:center;font-size:20px;color:#fff;">
+                    <i class="fa-solid fa-cubes"></i>
+                </div>
+                <div style="font-size:14px;color:var(--text);margin-bottom:4px;">
+                    <strong>]] .. utils.html_escape(client_name) .. [[</strong>
+                    <span class="badge badge-info">]] .. utils.html_escape(client_type) .. [[</span> wants to access your account
                 </div>
                 <div style="font-size:12px;color:var(--text-muted);">
-                    Signed in as <strong>]] .. utils.html_escape(user) .. [[</strong>
+                    Signed in as <strong>]] .. utils.html_escape(user) .. [[</strong> · realm <code>]] .. utils.html_escape(utils.get_realm()) .. [[</code>
                 </div>
             </div>
-            
-            <div style="background:rgba(0,0,0,0.2);border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:20px;">
-                <div style="font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:8px;text-transform:uppercase;">Permissions Requested</div>
-                <ul style="padding-left:20px;font-size:13px;color:var(--text);display:flex;flex-direction:column;gap:6px;">
-                    <li>Access your basic profile information</li>
-                    <li>Verify your identity and email address</li>
-                    <li>Read your assigned realm roles</li>
-                </ul>
+
+            <div style="background:rgba(0,0,0,0.2);border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin-bottom:20px;">
+                <div style="font-size:11px;font-weight:600;color:var(--text-muted);margin-bottom:10px;text-transform:uppercase;">This application will be able to</div>
+                <ul style="list-style:none;padding:0;display:flex;flex-direction:column;gap:12px;">]] .. scope_rows .. [[</ul>
             </div>
-            
+
             <form method="POST" action="]] .. consent_url .. [[">
                 ]] .. utils.render_security_fields(sec_token) .. [[
                 <div style="display:flex;gap:10px;">
-                    <button type="submit" name="decision" value="accept" class="btn btn-primary"><i class="fa-solid fa-check"></i> Grant Access</button>
-                    <button type="submit" name="decision" value="deny" class="btn btn-secondary">Deny</button>
+                    <button type="submit" name="decision" value="accept" class="btn btn-primary" style="flex:1;"><i class="fa-solid fa-check"></i> Allow</button>
+                    <button type="submit" name="decision" value="deny" class="btn btn-secondary"><i class="fa-solid fa-xmark"></i> Deny</button>
                 </div>
             </form>
         ]]
-        
+
         response:write(utils.render_auth_page("Authorize Application", "Grant Permissions", content))
         return
     end
@@ -169,7 +241,7 @@ if redirect_uri and redirect_uri ~= "" then
             scope = scope,
             created = os.time()
         }
-        db:put("code:" .. code, json.encode(code_data))
+        db:put(utils.rk("code:") .. code, json.encode(code_data))
         params_out["code"] = code
     end
     

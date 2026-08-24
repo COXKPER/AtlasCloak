@@ -13,7 +13,7 @@ end
 -- Clear events action
 local action = request:getParam("action")
 if action == "clear" then
-    db:delete("meta:events")
+    db:delete(utils.rk("meta:events"))
     db:close()
     response:redirect("/admin/events", 302)
     return
@@ -21,7 +21,7 @@ end
 
 local type_filter = request:getParam("type") or ""
 
-local events_str = db:get("meta:events")
+local events_str = db:get(utils.rk("meta:events"))
 local events = events_str and json.decode(events_str) or {}
 db:close()
 
