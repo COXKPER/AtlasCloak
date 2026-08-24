@@ -93,18 +93,100 @@ if request.method == "POST" then
         end
         current_tab = "theme"
 
-    elseif action == "run_upgrade" then
-        local target_repo = "https://github.com/COXKPER/AtlasCloak.git"
-        local output = ""
-        local handle = io.popen("git pull " .. target_repo .. " 2>&1 || git status 2>&1")
-        if handle then
-            output = handle:read("*a") or "Upgrade command executed."
-            handle:close()
+    elseif action == "check_update" then
+        local ok_token, token_err = utils.validate_security_token(db, form, "system_update")
+        if not ok_token then
+            msg_html = '<div class="alert alert-error"><span class="alert-icon">✕</span> ' .. utils.html_escape(token_err) .. ' — reload the page and try again.</div>'
         else
-            output = "Could not spawn git process. Manual upgrade via CLI is recommended."
+            local remote_version, fetch_err = utils.fetch_remote_version()
+            if not remote_version then
+                msg_html = '<div class="alert alert-error"><span class="alert-icon">✕</span> Could not reach GitHub: ' .. utils.html_escape(fetch_err or "network error") .. '</div>'
+            else
+                local cmp = utils.compare_versions(remote_version, utils.version)
+                local cmp_html
+                if cmp > 0 then
+                    cmp_html = '<span class="badge badge-warning">Update available: v' .. utils.html_escape(remote_version) .. '</span>'
+                elseif cmp < 0 then
+                    cmp_html = '<span class="badge badge-info">Local is newer (v' .. utils.html_escape(utils.version) .. ' &gt; v' .. utils.html_escape(remote_version) .. ')</span>'
+                else
+                    cmp_html = '<span class="badge badge-success">Up to date</span>'
+                end
+                msg_html = '<div class="alert alert-info"><span class="alert-icon"><i class="fa-solid fa-magnifying-glass"></i></span> Installed: <strong>v' .. utils.html_escape(utils.version) .. '</strong> &nbsp;·&nbsp; Latest on GitHub: <strong>v' .. utils.html_escape(remote_version) .. '</strong> &nbsp;' .. cmp_html .. '</div>'
+            end
         end
-        msg_html = '<div class="alert alert-success"><span class="alert-icon">✓</span> Upgrade process executed.<br><pre style="margin-top:6px;font-size:11px;color:#cbd5e1;background:#0f172a;padding:8px;border-radius:6px;overflow-x:auto;">' .. utils.html_escape(output) .. '</pre></div>'
         current_tab = "updates"
+
+    elseif action == "run_upgrade" then
+        local ok_token, token_err = utils.validate_security_token(db, form, "system_update")
+        if not ok_token then
+            msg_html = '<div class="alert alert-error"><span class="alert-icon">✕</span> ' .. utils.html_escape(token_err) .. ' — reload the page and try again.</div>'
+            current_tab = "updates"
+        else
+            local lines = {}
+            
+            -- 1. Download the latest main tarball (pinned URL — no user input reaches the shell)
+            local dl_ok = os.execute("rm -rf /tmp/atlascloak-update /tmp/atlascloak-update.tar.gz && mkdir -p /tmp/atlascloak-update && (curl -fsSL --max-time 90 -o /tmp/atlascloak-update.tar.gz https://github.com/COXKPER/AtlasCloak/archive/refs/heads/main.tar.gz || wget -qT 90 -O /tmp/atlascloak-update.tar.gz https://github.com/COXKPER/AtlasCloak/archive/refs/heads/main.tar.gz)")
+            if not dl_ok then
+                table.insert(lines, "[FAIL] Download from github.com/COXKPER/AtlasCloak failed (curl/wget unavailable or network error).")
+            end
+            
+            -- 2. Extract + verify archive structure before touching anything
+            if dl_ok then
+                local ex_ok = os.execute("tar xzf /tmp/atlascloak-update.tar.gz -C /tmp/atlascloak-update && test -f /tmp/atlascloak-update/AtlasCloak-main/lib/utils.lua && test -f /tmp/atlascloak-update/AtlasCloak-main/index.lua")
+                if not ex_ok then
+                    table.insert(lines, "[FAIL] Extracted archive failed verification (lib/utils.lua missing). Update aborted, system untouched.")
+                    dl_ok = false
+                end
+            end
+            
+            -- 3. Backup current installation (database atlascloak.db lives outside public/ and is never touched)
+            if dl_ok then
+                os.execute("mkdir -p backups")
+                local bk_ok = os.execute("tar czf backups/atlascloak-backup-" .. os.time() .. ".tar.gz -C public . 2>/dev/null")
+                if bk_ok then
+                    table.insert(lines, "[OK] Current installation backed up to backups/atlascloak-backup-" .. os.time() .. ".tar.gz")
+                else
+                    table.insert(lines, "[WARN] Backup step reported an error — continuing with update.")
+                end
+            end
+            
+            -- 4. Apply: overlay new files over public/ (no deletions; runtime data preserved)
+            if dl_ok then
+                local cp_ok = os.execute("cp -a /tmp/atlascloak-update/AtlasCloak-main/. public/")
+                if cp_ok then
+                    local new_version = utils.read_local_version_file()
+                    table.insert(lines, "[OK] Update applied successfully. Installed version is now v" .. utils.html_escape(new_version or "?") .. " (effective on next request).")
+                    table.insert(lines, "[OK] Restarting Telamon is NOT required — Lua routes reload per request.")
+                else
+                    table.insert(lines, "[FAIL] Copy step failed (disk full or permissions?). Restore from the backup in backups/.")
+                end
+            end
+            
+            os.execute("rm -rf /tmp/atlascloak-update /tmp/atlascloak-update.tar.gz")
+            
+            local upgrade_failed = lines[1] and string.find(lines[1], "%[FAIL%]", 1, true) ~= nil
+            local event = {
+                type = upgrade_failed and "UPDATE_FAILED" or "SYSTEM_UPDATE",
+                username = admin_user,
+                ip = utils.get_client_ip(),
+                time = os.time(),
+                detail = upgrade_failed and "Self-update from GitHub failed" or "Self-update from GitHub applied"
+            }
+            local events_str = db:get("meta:events")
+            local events = events_str and json.decode(events_str) or {}
+            table.insert(events, event)
+            if #events > 100 then
+                local new_events = {}
+                for i = #events - 99, #events do table.insert(new_events, events[i]) end
+                events = new_events
+            end
+            db:put("meta:events", json.encode(events))
+            
+            local alert_cls = upgrade_failed and "alert-error" or "alert-success"
+            local icon = upgrade_failed and "✕" or "✓"
+            msg_html = '<div class="alert ' .. alert_cls .. '"><span class="alert-icon">' .. icon .. '</span> Self-update finished with result:<br><pre style="margin-top:6px;font-size:11px;color:#cbd5e1;background:#0f172a;padding:8px;border-radius:6px;overflow-x:auto;">' .. utils.html_escape(table.concat(lines, "\n")) .. '</pre></div>'
+            current_tab = "updates"
+        end
 
     elseif action == "import_realm" then
         local json_payload = form.json_payload or ""
@@ -145,6 +227,10 @@ local token_format = db:get("setting:token_format") or "jwt"
 
 local bf_cfg = utils.get_brute_force_config(db)
 local policy = utils.get_password_policy(db)
+
+-- One-time CSRF token for the self-update actions (bound to action
+-- "system_update", expires in 10 minutes, consumed on use).
+local update_sec_token = utils.generate_security_token(db, "system_update")
 
 db:close()
 
@@ -518,29 +604,41 @@ local updates_tab_html = [[
             </div>
             <div class="card-body">
                 <p style="font-size:13px;color:var(--text-muted);margin-bottom:16px;">
-                    Pull and update the latest system scripts, protocol handlers, and security fixes directly from the official GitHub repository (<code>https://github.com/COXKPER/AtlasCloak</code>). Your database (<code>atlascloak.db</code>) and server config (<code>config.toml</code>) remain untouched and safe.
+                    Check for new releases and pull the latest system scripts, protocol handlers, and security fixes directly from the official GitHub repository (<code>https://github.com/COXKPER/AtlasCloak</code>). Your database (<code>atlascloak.db</code>) and server config (<code>config.toml</code>) remain untouched — the current installation is archived to <code>backups/</code> before anything is applied.
                 </p>
 
-                <form method="POST" action="/admin/realm-settings?tab=updates">
-                    <input type="hidden" name="action" value="run_upgrade">
-                    <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
-                        <button type="submit" class="btn btn-primary" onclick="return confirm('Do you want to pull and apply the latest updates from https://github.com/COXKPER/AtlasCloak?');">
-                            <i class="fa-solid fa-rotate"></i> Pull Latest Upstream from GitHub
+                <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
+                    <form method="POST" action="/admin/realm-settings?tab=updates" style="display:inline;">
+                        <input type="hidden" name="action" value="check_update">
+                        ]] .. utils.render_security_fields(update_sec_token) .. [[
+                        <button type="submit" class="btn btn-secondary">
+                            <i class="fa-solid fa-magnifying-glass"></i> Check for Updates
                         </button>
-                    </div>
-                </form>
+                    </form>
+                    <form method="POST" action="/admin/realm-settings?tab=updates" style="display:inline;">
+                        <input type="hidden" name="action" value="run_upgrade">
+                        ]] .. utils.render_security_fields(update_sec_token) .. [[
+                        <button type="submit" class="btn btn-primary" onclick="return confirm('Download the latest version from https://github.com/COXKPER/AtlasCloak, back up the current installation, and apply it now?');">
+                            <i class="fa-solid fa-cloud-arrow-down"></i> Download &amp; Apply Update
+                        </button>
+                    </form>
+                </div>
+
+                <div style="font-size:11px;color:var(--text-muted);">
+                    <i class="fa-solid fa-shield-halved" style="color:var(--success);"></i> Protected by one-time CSRF tokens &middot; every attempt is written to the audit log with the resolved client IP.
+                </div>
 
                 <div style="margin-top:16px;">
                     <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:8px;">Manual Upgrade Guide (CLI):</div>
-                    <pre style="background:#090d16;padding:12px;border-radius:8px;border:1px solid var(--border);font-family:monospace;font-size:12px;color:#38bdf8;overflow-x:auto;"># 1. Pull latest upstream:
-cd /opt/AtlasCloak && git pull https://github.com/COXKPER/AtlasCloak.git main
+                    <pre style="background:#090d16;padding:12px;border-radius:8px;border:1px solid var(--border);font-family:monospace;font-size:12px;color:#38bdf8;overflow-x:auto;"># 1. Download &amp; extract the latest release:
+curl -fsSL -o /tmp/atlas.tar.gz https://github.com/COXKPER/AtlasCloak/archive/refs/heads/main.tar.gz
+mkdir -p /tmp/atlascloak-update &amp;&amp; tar xzf /tmp/atlas.tar.gz -C /tmp/atlascloak-update
 
-# OR fresh clone upgrade:
-git clone https://github.com/COXKPER/AtlasCloak.git /tmp/atlascloak-latest
-cp -r /tmp/atlascloak-latest/public /opt/AtlasCloak/
+# 2. Back up, then apply over public/:
+tar czf backups/atlascloak-backup-$(date +%s).tar.gz -C public .
+cp -a /tmp/atlascloak-update/AtlasCloak-main/. public/
 
-# 2. Restart background service (optional, Lua reloads dynamically):
-systemctl restart atlascloak</pre>
+# 3. Restarting Telamon is optional — Lua routes reload per request.</pre>
                 </div>
             </div>
         </div>

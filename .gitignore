@@ -1,0 +1,9 @@
+# Runtime data — never commit
+social.db/
+storage/
+*.db/
+*.db
+
+# OS / editor noise
+.DS_Store
+Thumbs.db

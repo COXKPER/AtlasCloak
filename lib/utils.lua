@@ -1,7 +1,7 @@
 local M = {}
 
 M.db_path = "./atlascloak.db"
-M.version = "1.2.1"
+M.version = "1.3.0"
 
 local sha256_mod = dofile("public/lib/sha256.lua")
 
@@ -1113,59 +1113,91 @@ end
 
 -- ─── Reverse Proxy & Real Client IP Detection ────────────────────────────────
 
+-- Strict validators — header values are attacker-controlled, so anything that
+-- does not parse as a well-formed address is rejected (prevents audit-log
+-- injection of junk like "1.2.3.4<script>" through spoofed proxy headers).
+
+local function valid_ipv4(ip)
+    if not ip or #ip > 15 then return false end
+    local a, b, c, d = string.match(ip, "^(%d+)%.(%d+)%.(%d+)%.(%d+)$")
+    if not a then return false end
+    for _, octet in ipairs({ a, b, c, d }) do
+        if #octet > 3 then return false end
+        if #octet > 1 and string.sub(octet, 1, 1) == "0" then return false end
+        if tonumber(octet) > 255 then return false end
+    end
+    return true
+end
+
+local function valid_ipv6(ip)
+    if not ip or #ip < 2 or #ip > 45 then return false end
+    if not string.match(ip, "^[%x:]+$") then return false end
+    -- An embedded IPv4 tail (::ffff:192.168.0.1) is allowed.
+    local v4_tail = string.match(ip, ":(%d+%.%d+%.%d+%.%d+)$")
+    if v4_tail then
+        if not valid_ipv4(v4_tail) then return false end
+        ip = string.sub(ip, 1, -(#v4_tail + 1))
+        if not string.match(ip, ":$") then return false end
+    end
+    local _, colons = string.gsub(ip, ":", "")
+    if colons < 1 or colons > 7 then return false end
+    local _, double = string.gsub(ip, "::", "")
+    if double > 1 then return false end
+    return true
+end
+
+local function valid_ip(ip)
+    return valid_ipv4(ip) or valid_ipv6(ip)
+end
+
+local function strip_port(ip)
+    local v4 = string.match(ip, "^([%d%.]+):%d+$")
+    if v4 then return v4 end
+    local v6 = string.match(ip, "^%[([%w:%%.-]+)%]:%d+$")
+    if v6 then return v6 end
+    return ip
+end
+
 function M.get_client_ip()
     if not request then return "127.0.0.1" end
     local headers = request.headers or {}
     
-    -- 1. Cloudflare True Client IP / Connecting IP
-    local cf_ip = headers["cf-connecting-ip"]
-    if cf_ip and cf_ip ~= "" then
-        local ip = string.match(cf_ip, "^%s*([%w%.:]+)%s*$")
-        if ip then return ip end
-    end
+    -- 1. Cloudflare Connecting IP
+    local cf_ip = strip_port(string.match(headers["cf-connecting-ip"] or "", "^%s*(.-)%s*$") or "")
+    if valid_ip(cf_ip) then return cf_ip end
     
     -- 2. True-Client-IP header (Akamai, Cloudflare Enterprise)
-    local true_ip = headers["true-client-ip"]
-    if true_ip and true_ip ~= "" then
-        local ip = string.match(true_ip, "^%s*([%w%.:]+)%s*$")
-        if ip then return ip end
-    end
+    local true_ip = strip_port(string.match(headers["true-client-ip"] or "", "^%s*(.-)%s*$") or "")
+    if valid_ip(true_ip) then return true_ip end
     
-    -- 3. X-Real-IP header (Nginx, Caddy, Traefik, HAProxy)
-    local real_ip = headers["x-real-ip"]
-    if real_ip and real_ip ~= "" then
-        local ip = string.match(real_ip, "^%s*([%w%.:]+)%s*$")
-        if ip then return ip end
-    end
+    -- 3. X-Real-IP header (Nginx, Caddy reverse_proxy, Traefik, HAProxy)
+    local real_ip = strip_port(string.match(headers["x-real-ip"] or "", "^%s*(.-)%s*$") or "")
+    if valid_ip(real_ip) then return real_ip end
     
-    -- 4. X-Forwarded-For (take the first / leftmost IP address in comma list)
-    local xff = headers["x-forwarded-for"]
-    if xff and xff ~= "" then
-        local first_ip = string.match(xff, "^%s*([^,]+)")
-        if first_ip and first_ip ~= "" then
-            local ip_only = string.match(first_ip, "^([%d%.]+):%d+$") or first_ip
-            ip_only = string.match(ip_only, "^%s*(.-)%s*$")
-            if ip_only and ip_only ~= "" then return ip_only end
+    -- 4. X-Forwarded-For — leftmost entry is the original client as injected
+    --    by Caddy/nginx/Cloudflare when they terminate the client connection.
+    local xff = headers["x-forwarded-for"] or ""
+    if xff ~= "" then
+        for entry in string.gmatch(xff, "[^,]+") do
+            local candidate = strip_port(string.match(entry, "^%s*(.-)%s*$") or "")
+            if valid_ip(candidate) then return candidate end
         end
     end
     
     -- 5. RFC 7239 Forwarded header (for=...)
-    local fwd = headers["forwarded"]
-    if fwd and fwd ~= "" then
-        local for_ip = string.match(fwd, "for=\"?([^;\"]+)\"?")
-        if for_ip and for_ip ~= "" then
-            local ip_only = string.match(for_ip, "^([%d%.]+):%d+$") or for_ip
-            return ip_only
+    local fwd = headers["forwarded"] or ""
+    if fwd ~= "" then
+        local raw_for = string.match(fwd, 'for=%[?%"?([^%]";,]+)')
+        if raw_for then
+            local candidate = strip_port(string.match(raw_for, "^%s*(.-)%s*$") or "")
+            if valid_ip(candidate) then return candidate end
         end
     end
     
     -- 6. Fallback to request.remote_addr (strip port)
     local raw_addr = request.remote_addr or "127.0.0.1"
-    local ip_part = string.match(raw_addr, "^([%d%.]+):%d+$")
-    if ip_part then return ip_part end
-    
-    local ip6_part = string.match(raw_addr, "^%[([%w%.:]+)%]:%d+$")
-    if ip6_part then return ip6_part end
+    local stripped = strip_port(raw_addr)
+    if valid_ip(stripped) then return stripped end
     
     return raw_addr
 end
@@ -1222,6 +1254,47 @@ function M.render_security_fields(token)
         </div>
     ]]
 end
+
+-- ─── Self-Update Helpers ─────────────────────────────────────────────────────
+
+function M.compare_versions(a, b)
+    local function parts(v)
+        local t = {}
+        for n in string.gmatch(tostring(v), "%d+") do table.insert(t, tonumber(n)) end
+        return t
+    end
+    local pa, pb = parts(a), parts(b)
+    for i = 1, math.max(#pa, #pb) do
+        local x = pa[i] or 0
+        local y = pb[i] or 0
+        if x ~= y then return x < y and -1 or 1 end
+    end
+    return 0
+end
+
+-- Fetches the version marker from lib/utils.lua on the main branch of the
+-- upstream repository. Returns version string or nil + error reason.
+function M.fetch_remote_version()
+    local handle = io.popen("curl -fsSL --max-time 15 https://raw.githubusercontent.com/COXKPER/AtlasCloak/main/lib/utils.lua 2>/dev/null || wget -qT 15 -O - https://raw.githubusercontent.com/COXKPER/AtlasCloak/main/lib/utils.lua 2>/dev/null")
+    if not handle then return nil, "cannot spawn curl/wget process" end
+    local content = handle:read("*a") or ""
+    handle:close()
+    if content == "" then return nil, "empty response (network unreachable?)" end
+    local version = string.match(content, 'M%.version%s*=%s*"([^"]+)"')
+    if not version then return nil, "upstream file has no version marker" end
+    return version
+end
+
+-- Reads the version marker from the locally installed public/lib/utils.lua
+-- without executing any code.
+function M.read_local_version_file()
+    local file = io.open("public/lib/utils.lua", "r")
+    if not file then return nil end
+    local content = file:read("*a")
+    file:close()
+    return string.match(content, 'M%.version%s*=%s*"([^"]+)"')
+end
+
 
 -- ─── CSS Theme ────────────────────────────────────────────────────────────────
 
