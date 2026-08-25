@@ -1,7 +1,7 @@
 local M = {}
 
 M.db_path = "./atlascloak.db"
-M.version = "2.0.2"
+M.version = "2.0.3"
 
 local sha256_mod = dofile("public/lib/sha256.lua")
 
@@ -1364,6 +1364,10 @@ function M.apply_security_headers()
     response:setHeader("Referrer-Policy", "no-referrer")
     response:setHeader("X-XSS-Protection", "0")
     response:setHeader("Cross-Origin-Opener-Policy", "same-origin")
+    -- NOTE: deliberately NO form-action directive. OIDC response_mode=form_post
+    -- legitimately submits consent/login forms to third-party redirect_uri
+    -- targets; form-action would block them (and unlike most directives it
+    -- does NOT fall back to default-src, so absence means unrestricted).
     response:setHeader("Content-Security-Policy",
         "default-src 'self'; " ..
         "script-src 'self' 'unsafe-inline'; " ..
@@ -1372,8 +1376,7 @@ function M.apply_security_headers()
         "img-src 'self' data:; " ..
         "connect-src 'self'; " ..
         "frame-ancestors 'none'; " ..
-        "base-uri 'self'; " ..
-        "form-action 'self'")
+        "base-uri 'self'")
 end
 
 -- ─── Multi-Realm Support ─────────────────────────────────────────────────────
